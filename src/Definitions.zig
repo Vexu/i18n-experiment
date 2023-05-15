@@ -121,7 +121,10 @@ const Parser = struct {
                     parser.i += 1;
                     break;
                 },
-                else => {},
+                else => {
+                    parser.col += 1;
+                    parser.i += 1;
+                },
             },
             else => return,
         };
@@ -158,14 +161,18 @@ const Parser = struct {
 
         parser.inst_buf.items.len = 0;
         var warned = false;
-        while (!parser.skip("end")) {
+        while (true) {
             parser.skipWhitespace();
             if (parser.input[parser.i] == 0 and parser.i == parser.input.len) {
                 parser.warn("unexpected EOF inside definition", .{});
                 break;
             }
+            if (parser.skip("end")) break;
             if (try parser.stmt()) continue;
-            if (!warned) parser.warn("ignoring unexpected statement", .{});
+            if (!warned) {
+                warned = true;
+                parser.warn("ignoring unexpected statement", .{});
+            }
             parser.col += 1;
             parser.i += 1;
         }
@@ -178,9 +185,30 @@ const Parser = struct {
     }
 
     fn str(parser: *Parser) !?[]u8 {
+        const start = parser.i;
         if (parser.input[parser.i] != '"') return null;
-        // TODO
-        return "";
+        var escape = true;
+        while (true) {
+            const c = parser.input[parser.i];
+            parser.i += 1;
+            parser.col += 1;
+            if (c == 0) {
+                parser.warn("invalid null byte in string", .{});
+                return null;
+            }
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                break;
+            }
+        }
+        const slice = parser.input[start..parser.i];
+        parser.string_buf.items.len = 0;
+        const res = try std.zig.string_literal.parseWrite(parser.string_buf.writer(), slice);
+        if (res != .success) parser.warn("invalid string '{s}'", .{slice});
+        return try parser.defs.arena.allocator().dupe(u8, parser.string_buf.items);
     }
 
     fn arg(parser: *Parser) !?[]const u8 {
@@ -243,6 +271,7 @@ test "parsing a simple definition" {
         \\# Comment explaining something about this translation
         \\def "Hello {%1}!"
         \\"Moikka {%1}!"
+        \\end
         \\
     ;
     var defs = try parse(std.testing.allocator, input);

@@ -14,7 +14,8 @@ pub fn build(b: *Build) !void {
     const mode = b.standardOptimizeOption(.{});
     _ = mode;
 
-    const tests_step = b.step("test", "Run all tests");
-    var unit_tests = b.addTest(.{ .root_source_file = .{ .path = "src/lib.zig" } });
-    tests_step.dependOn(&unit_tests.step);
+    const test_step = b.step("test", "Run all tests");
+    const test_exe = b.addTest(.{ .root_source_file = .{ .path = "src/lib.zig" } });
+    const run_test = b.addRunArtifact(test_exe);
+    test_step.dependOn(&run_test.step);
 }
