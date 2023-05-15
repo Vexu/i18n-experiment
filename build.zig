@@ -15,6 +15,6 @@ pub fn build(b: *Build) !void {
     _ = mode;
 
     const tests_step = b.step("test", "Run all tests");
-    var unit_tests = b.addTest(.{ .root_source_file = .{ .path = "src/main.zig" } });
+    var unit_tests = b.addTest(.{ .root_source_file = .{ .path = "src/lib.zig" } });
     tests_step.dependOn(&unit_tests.step);
 }

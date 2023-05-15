@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const assert = std.debug.assert;
+const expect = std.testing.expect;
+const expectEqualStrings = std.testing.expectEqualStrings;
 const log = std.log.scoped(.i18n);
 const math = std.math;
 const mem = std.mem;
@@ -28,8 +30,11 @@ pub const Program = struct {
         end,
         set: *Set,
         @"if": *If,
-        str: []const u8,
         arg: []const u8,
+        str: []const u8,
+        bool: bool,
+        int: i64,
+        float: f64,
 
         eq: *Bin,
         neq: *Bin,
@@ -66,7 +71,7 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
     var parser = Parser{
         .defs = &defs,
         .string_buf = std.ArrayList(u8).init(gpa),
-        .inst_buf = std.ArrayList(Program.Inst).init(gpa),
+        .inst_buf = std.ArrayList(Program.Instruction).init(gpa),
         .input = input,
     };
     defer parser.string_buf.deinit();
@@ -77,7 +82,7 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
         parser.skipWhitespace();
         if (parser.input[parser.i] == 0 and parser.i == parser.input.len) break;
 
-        if (parser.def()) {
+        if (try parser.def()) {
             warned = false;
         } else {
             if (!warned) parser.warn("ignoring unexpected input", .{});
@@ -85,12 +90,13 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
             parser.i += 1;
         }
     }
+    return defs;
 }
 
 const Parser = struct {
     defs: *Definitions,
     string_buf: std.ArrayList(u8),
-    inst_buf: std.ArrayList(Program.Inst),
+    inst_buf: std.ArrayList(Program.Instruction),
     input: [:0]const u8,
     i: usize = 0,
     line: usize = 1,
@@ -146,23 +152,29 @@ const Parser = struct {
                 opt_def_name = null;
             }
         } else {
-            try parser.warn("ignoring unnamed definition", .{});
+            parser.warn("ignoring unnamed definition", .{});
         }
-        errdefer if (opt_def_name) |def_name| parser.defs.rules.remove(def_name);
+        errdefer if (opt_def_name) |def_name| assert(parser.defs.rules.remove(def_name));
 
-        parser.inst_buf.len = 0;
+        parser.inst_buf.items.len = 0;
+        var warned = false;
         while (!parser.skip("end")) {
             parser.skipWhitespace();
             if (parser.input[parser.i] == 0 and parser.i == parser.input.len) {
                 parser.warn("unexpected EOF inside definition", .{});
                 break;
             }
-            try parser.inst();
+            if (try parser.stmt()) continue;
+            if (!warned) parser.warn("ignoring unexpected statement", .{});
+            parser.col += 1;
+            parser.i += 1;
         }
-        if (opt_def_name == null) return;
+        if (opt_def_name == null) return true;
 
         try parser.inst_buf.append(.end);
-        gop.value_ptr.* = try parser.defs.arena.allocator().dupe(Program.Inst, parser.inst_buf.items);
+        const insts = try parser.defs.arena.allocator().dupe(Program.Instruction, parser.inst_buf.items);
+        gop.value_ptr.* = .{ .body = insts.ptr };
+        return true;
     }
 
     fn str(parser: *Parser) !?[]u8 {
@@ -171,8 +183,76 @@ const Parser = struct {
         return "";
     }
 
-    fn inst(parser: *Parser) !void {
-        _ = parser;
-        // TODO
+    fn arg(parser: *Parser) !?[]const u8 {
+        if (parser.skip("%")) return null;
+        const start = parser.i;
+        while (true) switch (parser.input[parser.i]) {
+            '0'...'9', 'a'...'z', 'A'...'Z' => {
+                parser.col += 1;
+                parser.i += 1;
+            },
+            else => break,
+        };
+        if (start == parser.i) {
+            parser.warn("expected argument name after '%'", .{});
+            return null;
+        }
+        return parser.input[start..parser.i];
+    }
+
+    fn stmt(parser: *Parser) !bool {
+        if (parser.skip("set")) {
+            parser.skipWhitespace();
+            const dest = try parser.arg();
+            _ = dest;
+            parser.skipWhitespace();
+            if (!parser.skip("to")) {
+                parser.warn("expected 'to' after argument to set", .{});
+            }
+            parser.skipWhitespace();
+            const val = try parser.expr();
+            _ = val;
+            return true;
+        } else if (parser.skip("if")) {
+            // TODO
+            return true;
+        } else if (try parser.str()) |some| {
+            try parser.inst_buf.append(.{ .str = some });
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn expr(parser: *Parser) !?Program.Instruction {
+        if (parser.skip("true")) {
+            return .{ .bool = true };
+        } else if (parser.skip("false")) {
+            return .{ .bool = false };
+        } else if (try parser.str()) |some| {
+            return .{ .str = some };
+        } else {
+            // TODO numbers
+            return null;
+        }
     }
 };
+
+test "parsing a simple definition" {
+    const input =
+        \\# Comment explaining something about this translation
+        \\def "Hello {%1}!"
+        \\"Moikka {%1}!"
+        \\
+    ;
+    var defs = try parse(std.testing.allocator, input);
+    defer defs.deinit();
+
+    try expect(defs.rules.count() == 1);
+    const rule = defs.rules.get("Hello {%1}!");
+    try expect(rule != null);
+    const body = rule.?.body;
+    try expect(body[0] == .str);
+    try expectEqualStrings("Moikka {%1}!", body[0].str);
+    try expect(body[1] == .end);
+}
