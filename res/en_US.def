@@ -1,0 +1,9 @@
+# member is either "member function " or empty
+# variadic is either "at least " or empty 
+def "{%member}expected {%variadic}{%expected} argument(s), found {%actual}"
+    if %expected = 1
+        "{%member}expected {%variadic}one argument, found {%actual}"
+    else
+        "{%member}expected {%variadic}{%expected} arguments, found {%actual}"
+    end
+end

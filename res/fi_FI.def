@@ -1,0 +1,19 @@
+# member is either "member function " or empty
+# variadic is either "at least " or empty
+def "{%member}expected {%variadic}{%expected} argument(s), found {%actual}"
+    if %member != ""
+        set %member to "jäsen "
+    end
+    if %variadic != ""
+        set %variadic to "vähintään"
+    end
+    if %expected = 1
+        "{%member}funktio ottaa {%variadic}yhden argumentin, löytyi {%actual}"
+    else
+        "{%member}funktio ottaa {%variadic}{%expected} argumenttia, löytyi {%actual}"
+    end
+end
+
+def "foo {%1} {{%foo}}"
+    "bar {%1} bar"
+end
