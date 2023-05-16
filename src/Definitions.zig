@@ -74,14 +74,14 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
     var warned = false;
     while (true) {
         parser.skipWhitespace();
-        if (parser.input[parser.i] == 0 and parser.i == parser.input.len) break;
+        if (parser.input[parser.index] == 0 and parser.index == parser.input.len) break;
 
         if (try parser.def()) {
             warned = false;
         } else {
             if (!warned) parser.warn("ignoring unexpected input", .{});
             parser.col += 1;
-            parser.i += 1;
+            parser.index += 1;
         }
     }
     return defs;
@@ -89,131 +89,131 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
 
 const Parser = struct {
     defs: *Definitions,
-    string_buf: std.ArrayList(u8),
-    inst_buf: std.ArrayList(Program.Instruction),
+    string_buf: std.ArrayListUnmanaged(u8) = .{},
+    inst_buf: std.ArrayListUnmanaged(Program.Instruction) = .{},
     input: [:0]const u8,
-    i: usize = 0,
+    index: usize = 0,
     line: usize = 1,
     col: usize = 1,
-    arg_names: std.ArrayList([]const u8),
+    arg_names: std.StringHashMapUnmanaged(void) = .{},
+    gpa: Allocator,
 
-    const invalid_args = std.math.maxInt(usize);
+    const invalid_args = std.math.maxInt(u32);
 
     fn init(gpa: Allocator, defs: *Definitions, input: [:0]const u8) Parser {
         return .{
             .defs = defs,
-            .string_buf = std.ArrayList(u8).init(gpa),
-            .inst_buf = std.ArrayList(Program.Instruction).init(gpa),
             .input = input,
-            .arg_names = std.ArrayList([]const u8).init(gpa),
+            .gpa = gpa,
         };
     }
 
-    fn deinit(parser: *Parser) void {
-        parser.string_buf.deinit();
-        parser.inst_buf.deinit();
-        parser.arg_names.deinit();
-        parser.* = undefined;
+    fn deinit(p: *Parser) void {
+        p.string_buf.deinit(p.gpa);
+        p.inst_buf.deinit(p.gpa);
+        p.arg_names.deinit(p.gpa);
+        p.* = undefined;
     }
 
-    fn skipWhitespace(parser: *Parser) void {
-        while (true) switch (parser.input[parser.i]) {
+    fn skipWhitespace(p: *Parser) void {
+        while (true) switch (p.input[p.index]) {
             '\n' => {
-                parser.col = 1;
-                parser.line += 1;
-                parser.i += 1;
+                p.col = 1;
+                p.line += 1;
+                p.index += 1;
             },
             ' ', '\t', '\r' => {
-                parser.col += 1;
-                parser.i += 1;
+                p.col += 1;
+                p.index += 1;
             },
-            '#' => while (true) switch (parser.input[parser.i]) {
+            '#' => while (true) switch (p.input[p.index]) {
                 0 => return,
                 '\n' => {
-                    parser.col = 1;
-                    parser.line += 1;
-                    parser.i += 1;
+                    p.col = 1;
+                    p.line += 1;
+                    p.index += 1;
                     break;
                 },
                 else => {
-                    parser.col += 1;
-                    parser.i += 1;
+                    p.col += 1;
+                    p.index += 1;
                 },
             },
             else => return,
         };
     }
 
-    fn warn(parser: Parser, comptime fmt: []const u8, args: anytype) void {
-        log.warn(fmt ++ " at line {d}, column {d}", args ++ .{ parser.line, parser.col });
+    fn warn(p: Parser, comptime fmt: []const u8, args: anytype) void {
+        log.warn(fmt ++ " at line {d}, column {d}", args ++ .{ p.line, p.col });
     }
 
-    fn skip(parser: *Parser, s: []const u8) bool {
-        if (!mem.startsWith(u8, parser.input[parser.i..], s))
+    fn skip(p: *Parser, s: []const u8) bool {
+        if (!mem.startsWith(u8, p.input[p.index..], s))
             return false;
-        parser.i += s.len;
-        parser.col += s.len;
+        p.index += s.len;
+        p.col += s.len;
         return true;
     }
 
-    fn def(parser: *Parser) !bool {
-        if (!parser.skip("def")) return false;
+    fn def(p: *Parser) !bool {
+        if (!p.skip("def")) return false;
 
-        parser.skipWhitespace();
-        var opt_def_name = try parser.str(.collect);
-        var gop: @TypeOf(parser.defs.rules).GetOrPutResult = undefined;
+        p.skipWhitespace();
+        var opt_def_name = try p.str(.collect);
+        var gop: @TypeOf(p.defs.rules).GetOrPutResult = undefined;
         if (opt_def_name) |def_name| {
-            gop = try parser.defs.rules.getOrPut(parser.inst_buf.allocator, def_name);
+            gop = try p.defs.rules.getOrPut(p.gpa, def_name);
             if (gop.found_existing) {
-                parser.warn("ignoring duplicate definition for '{s}'", .{def_name});
+                p.warn("ignoring duplicate definition for '{s}'", .{def_name});
                 opt_def_name = null;
             }
         } else {
-            parser.warn("ignoring unnamed definition", .{});
+            p.warn("ignoring unnamed definition", .{});
         }
-        if (opt_def_name == null) parser.arg_names.items.len = invalid_args;
-        errdefer if (opt_def_name) |def_name| assert(parser.defs.rules.remove(def_name));
+        if (opt_def_name == null) p.arg_names.size = invalid_args;
+        errdefer if (opt_def_name) |def_name| assert(p.defs.rules.remove(def_name));
 
-        parser.inst_buf.items.len = 0;
+        p.inst_buf.items.len = 0;
         var warned = false;
         while (true) {
-            parser.skipWhitespace();
-            if (parser.input[parser.i] == 0 and parser.i == parser.input.len) {
-                parser.warn("unexpected EOF inside definition", .{});
+            p.skipWhitespace();
+            if (p.input[p.index] == 0 and p.index == p.input.len) {
+                p.warn("unexpected EOF inside definition", .{});
                 break;
             }
-            if (parser.skip("end")) break;
-            if (try parser.stmt()) continue;
+            if (p.skip("end")) break;
+            if (try p.stmt()) continue;
             if (!warned) {
                 warned = true;
-                parser.warn("ignoring unexpected statement", .{});
+                p.warn("ignoring unexpected statement", .{});
             }
-            parser.col += 1;
-            parser.i += 1;
+            p.col += 1;
+            p.index += 1;
         }
         if (opt_def_name == null) return true;
 
-        try parser.inst_buf.append(.end);
-        const insts = try parser.defs.arena.allocator().dupe(Program.Instruction, parser.inst_buf.items);
+        try p.inst_buf.append(p.gpa, .end);
+        const insts = try p.defs.arena.allocator().dupe(Program.Instruction, p.inst_buf.items);
         gop.value_ptr.* = .{ .body = insts.ptr };
         return true;
     }
 
-    const ArgMode = enum { collect, check, ignore };
+    const ArgMode = enum { collect, check };
 
-    fn str(parser: *Parser, arg_mode: ArgMode) !?[]u8 {
-        if (arg_mode == .collect) parser.arg_names.items.len = 0;
-        const start = parser.i + 1;
-        if (parser.input[parser.i] != '"') return null;
+    fn str(p: *Parser, arg_mode: ArgMode) !?[]u8 {
+        if (arg_mode == .collect) p.arg_names.clearRetainingCapacity();
+        if (p.input[p.index] != '"') return null;
+
+        const start = p.index + 1;
         var escape = true;
-        parser.string_buf.items.len = 0;
+        p.string_buf.items.len = 0;
         while (true) {
-            const c = parser.input[parser.i];
+            const c = p.input[p.index];
             if (c == 0) {
-                parser.warn("invalid null byte in string", .{});
+                p.warn("invalid null byte in string", .{});
                 return null;
             }
-            parser.i += 1;
+            p.index += 1;
             if (escape) {
                 escape = false;
             } else if (c == '\\') {
@@ -222,77 +222,71 @@ const Parser = struct {
                 break;
             }
         }
-        const slice = parser.input[start..parser.i];
+
+        const slice = p.input[start..p.index];
         var i: usize = 0;
         while (true) {
-            const c = slice[i];
-            switch (c) {
+            switch (slice[i]) {
                 '\\' => {
                     const escape_char_index = i + 1;
                     const result = std.zig.string_literal.parseEscapeSequence(slice, &i);
-                    parser.col += (i - escape_char_index) + 1;
+                    p.col += (i - escape_char_index) + 1;
                     switch (result) {
                         .success => |codepoint| {
                             if (slice[escape_char_index] == 'u') {
                                 var buf: [4]u8 = undefined;
                                 const len = std.unicode.utf8Encode(codepoint, &buf) catch {
-                                    parser.warn("invalid unicode codepoint in escape sequence", .{});
+                                    p.warn("invalid unicode codepoint in escape sequence", .{});
                                     continue;
                                 };
-                                try parser.string_buf.appendSlice(buf[0..len]);
+                                try p.string_buf.appendSlice(p.gpa, buf[0..len]);
                             } else {
-                                try parser.string_buf.append(@intCast(u8, codepoint));
+                                try p.string_buf.append(p.gpa, @intCast(u8, codepoint));
                             }
                         },
                         .failure => {
-                            parser.warn("invalid escape sequence", .{});
+                            p.warn("invalid escape sequence", .{});
                             continue;
                         },
                     }
                 },
                 '\n' => {
-                    try parser.string_buf.append(c);
-                    parser.line += 1;
-                    parser.col = 1;
+                    try p.string_buf.append(p.gpa, '\n');
+                    p.line += 1;
+                    p.col = 1;
                     i += 1;
                 },
                 '"' => break,
-                '{', '}' => try parser.strArg(slice, &i, arg_mode),
-                else => {
-                    try parser.string_buf.append(c);
-                    parser.col += 1;
+                '{', '}' => try p.strArg(slice, &i, arg_mode),
+                else => |c| {
+                    try p.string_buf.append(p.gpa, c);
+                    p.col += 1;
                     i += 1;
                 },
             }
         }
-        return try parser.defs.arena.allocator().dupe(u8, parser.string_buf.items);
+        return try p.defs.arena.allocator().dupe(u8, p.string_buf.items);
     }
 
-    fn strArg(parser: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !void {
+    fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !void {
         const c = slice[offset.*];
-        if (arg_mode == .ignore) {
-            try parser.string_buf.append(c);
-            parser.col += 1;
-            offset.* += 1;
-            return;
-        }
         if (c == slice[offset.* + 1]) {
-            try parser.string_buf.appendNTimes(c, 2);
-            parser.col += 2;
+            try p.string_buf.appendNTimes(p.gpa, c, 2);
+            p.col += 2;
             offset.* += 2;
             return;
         }
         if (c == '}') {
-            parser.warn("unescaped '}}' in string", .{});
-            try parser.string_buf.appendNTimes(c, 2);
-            parser.col += 1;
+            p.warn("unescaped '}}' in string", .{});
+            try p.string_buf.appendNTimes(p.gpa, c, 2);
+            p.col += 1;
             offset.* += 1;
             return;
         }
         if (slice[offset.* + 1] != '%') {
-            parser.warn("expected '%' after '{{'", .{});
-            try parser.string_buf.appendNTimes(c, 2);
-            parser.col += 1;
+            p.warn("expected '%' after '{{'", .{});
+            try p.string_buf.appendNTimes(p.gpa, c, 2);
+            p.col += 1;
             offset.* += 1;
             return;
         }
@@ -301,94 +295,97 @@ const Parser = struct {
         while (true) switch (slice[offset.*]) {
             '0'...'9', 'a'...'z', 'A'...'Z' => {
                 offset.* += 1;
-                parser.col += 1;
+                p.col += 1;
             },
             '}' => break,
             else => {
-                parser.warn("invalid character in argument name", .{});
+                p.warn("invalid character in argument name", .{});
                 return;
             },
         };
         const arg_name = slice[start..offset.*];
         offset.* += 1;
-        parser.col += 1;
+        p.col += 1;
 
         if (arg_mode == .collect) {
-            try parser.arg_names.append(arg_name);
-        } else if (parser.arg_names.items.len != invalid_args) {
-            for (parser.arg_names.items) |item| {
-                if (mem.eql(u8, item, arg_name)) break;
-            } else {
-                parser.warn("use of undefined argument '%{s}'", .{arg_name});
-                try parser.string_buf.appendSlice("[UNDEFINED ARGUMENT %");
-                try parser.string_buf.appendSlice(arg_name);
-                try parser.string_buf.appendSlice("]");
-                return;
-            }
+            try p.arg_names.put(p.gpa, arg_name, {});
+        } else if (p.arg_names.size != invalid_args and
+            !p.arg_names.contains(arg_name))
+        {
+            p.warn("use of undefined argument '%{s}'", .{arg_name});
+            try p.string_buf.appendSlice(p.gpa, "[UNDEFINED ARGUMENT %");
+            try p.string_buf.appendSlice(p.gpa, arg_name);
+            try p.string_buf.appendSlice(p.gpa, "]");
+            return;
         }
 
-        try parser.string_buf.appendSlice("{%");
-        try parser.string_buf.appendSlice(arg_name);
-        try parser.string_buf.append('}');
+        try p.string_buf.appendSlice(p.gpa, "{%");
+        try p.string_buf.appendSlice(p.gpa, arg_name);
+        try p.string_buf.append(p.gpa, '}');
     }
 
-    fn arg(parser: *Parser) !?[]const u8 {
-        if (parser.skip("%")) return null;
-        const start = parser.i;
-        while (true) switch (parser.input[parser.i]) {
+    fn arg(p: *Parser, arg_mode: ArgMode) !?[]const u8 {
+        if (p.input[p.index] != '%') return null;
+        p.col += 1;
+        p.index += 1;
+
+        const start = p.index;
+        while (true) switch (p.input[p.index]) {
             '0'...'9', 'a'...'z', 'A'...'Z' => {
-                parser.col += 1;
-                parser.i += 1;
+                p.col += 1;
+                p.index += 1;
             },
             else => break,
         };
-        if (start == parser.i) {
-            parser.warn("expected argument name after '%'", .{});
+        if (start == p.index) {
+            p.warn("expected argument name after '%'", .{});
             return null;
         }
-        const arg_name = parser.input[start..parser.i];
-        if (parser.arg_names.items.len != invalid_args) {
-            for (parser.arg_names.items) |item| {
-                if (mem.eql(u8, item, arg_name)) break;
-            } else {
-                parser.warn("use of undefined argument '%{s}'", .{arg_name});
-                return null;
-            }
+        const arg_name = p.input[start..p.index];
+        if (arg_mode == .collect) {
+            try p.arg_names.put(p.gpa, arg_name, {});
+        } else if (p.arg_names.size != invalid_args and
+            !p.arg_names.contains(arg_name))
+        {
+            p.warn("use of undefined argument '%{s}'", .{arg_name});
+            return null;
         }
-        return try parser.defs.arena.allocator().dupe(u8, arg_name);
+        return try p.defs.arena.allocator().dupe(u8, arg_name);
     }
 
-    fn stmt(parser: *Parser) !bool {
-        if (parser.skip("set")) {
-            parser.skipWhitespace();
-            const dest = try parser.arg();
+    fn stmt(p: *Parser) !bool {
+        if (p.skip("set")) {
+            p.skipWhitespace();
+            const dest = try p.arg(.collect);
             _ = dest;
-            parser.skipWhitespace();
-            if (!parser.skip("to")) {
-                parser.warn("expected 'to' after argument to set", .{});
+            p.skipWhitespace();
+            if (!p.skip("to")) {
+                p.warn("expected 'to' after argument to set", .{});
             }
-            parser.skipWhitespace();
-            const val = try parser.expr();
+            p.skipWhitespace();
+            const val = try p.expr();
             _ = val;
             return true;
-        } else if (parser.skip("if")) {
+        } else if (p.skip("if")) {
             // TODO
             return true;
-        } else if (try parser.str(.check)) |some| {
-            try parser.inst_buf.append(.{ .str = some });
+        } else if (try p.str(.check)) |some| {
+            try p.inst_buf.append(p.gpa, .{ .str = some });
             return true;
         } else {
             return false;
         }
     }
 
-    fn expr(parser: *Parser) !?Program.Instruction {
-        if (parser.skip("true")) {
+    fn expr(p: *Parser) !?Program.Instruction {
+        if (p.skip("true")) {
             return .{ .bool = true };
-        } else if (parser.skip("false")) {
+        } else if (p.skip("false")) {
             return .{ .bool = false };
-        } else if (try parser.str(.ignore)) |some| {
+        } else if (try p.str(.check)) |some| {
             return .{ .str = some };
+        } else if (try p.arg(.check)) |some| {
+            return .{ .arg = some };
         } else {
             // TODO numbers
             return null;
