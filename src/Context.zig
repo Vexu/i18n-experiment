@@ -9,27 +9,24 @@ const lib = @import("lib.zig");
 const Context = @This();
 
 defs: lib.Definitions,
-key_buf: std.ArrayListUnmanaged(u8) = .{},
 vals: std.StringHashMapUnmanaged(struct {
     val: lib.Value,
     opts: std.fmt.FormatOptions,
 }) = .{},
 
 pub fn deinit(ctx: *Context) void {
-    ctx.key_buf.deinit(ctx.defs.arena.child_allocator);
     ctx.vals.deinit(ctx.defs.arena.child_allocator);
     ctx.defs.deinit();
     ctx.* = undefined;
 }
 
 pub fn format(
-    context: *Context,
+    ctx: *Context,
     writer: anytype,
     comptime fmt: []const u8,
     args: anytype,
 ) !void {
-    _ = writer;
-    const gpa = context.defs.arena.child_allocator;
+    const gpa = ctx.defs.arena.child_allocator;
     const ArgsType = @TypeOf(args);
     const args_type_info = @typeInfo(ArgsType);
     if (args_type_info != .Struct) {
@@ -42,7 +39,8 @@ pub fn format(
         @compileError("32 arguments max are supported per format call");
     }
 
-    try context.vals.ensureTotalCapacity(gpa, max_format_args);
+    ctx.vals.clearRetainingCapacity();
+    try ctx.vals.ensureTotalCapacity(gpa, max_format_args);
 
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
@@ -140,7 +138,7 @@ pub fn format(
             else => std.fmt.comptimePrint("{d}", .{arg_pos}),
         };
         query_str = query_str ++ "{%" ++ arg_name ++ "}";
-        context.vals.putAssumeCapacity(arg_name, .{
+        ctx.vals.putAssumeCapacity(arg_name, .{
             .val = try lib.Value.from(@field(args, fields_info[arg_pos].name)),
             .opts = .{
                 .fill = placeholder.fill,
@@ -160,7 +158,8 @@ pub fn format(
         }
     }
 
-    // TODO lookup definition
+    const rule = (try ctx.query(query_str)) orelse query_str;
+    try ctx.render(rule, writer);
 }
 
 test "parsing a simple definition" {
@@ -168,6 +167,10 @@ test "parsing a simple definition" {
         \\# Comment explaining something about this translation
         \\def "Hello {%name}!"
         \\    "Moikka {%name}!"
+        \\end
+        \\# Intentionally broken rule
+        \\def "Bye {%name}!"
+        \\    "Heippa {%foo}!"
         \\end
         \\
     ;
@@ -181,6 +184,61 @@ test "parsing a simple definition" {
     defer out_buf.deinit();
 
     try ctx.format(out_buf.writer(), "Hello {s:%name}!", .{"Veikka"});
-    if (true) return error.SkipZigTest; // TODO
     try expectEqualStrings("Moikka Veikka!", out_buf.items);
+
+    out_buf.items.len = 0;
+    try ctx.format(out_buf.writer(), "Bye {s:%name}!", .{"Veikka"});
+    try expectEqualStrings("Heippa [UNDEFINED KEY \"foo\"]!", out_buf.items);
+}
+
+pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
+    const rule = ctx.defs.rules.get(key) orelse return null;
+    // TODO execute rule
+    return rule.body[0].str;
+}
+
+fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
+    var i: usize = 0;
+    while (i < rule.len) {
+        const start_index = i;
+        while (i < rule.len) : (i += 1) {
+            switch (rule[i]) {
+                '{', '}' => break,
+                else => {},
+            }
+        }
+        // Handle {{ and }}, those are un-escaped as single braces
+        var unescape = false;
+        if (i + 1 < rule.len and rule[i + 1] == rule[i]) {
+            unescape = true;
+            i += 1;
+        }
+        try writer.writeAll(rule[start_index..i]);
+        if (unescape) {
+            i += 1;
+            continue;
+        }
+
+        if (i >= rule.len) break;
+
+        // The parser validates these.
+        assert(rule[i] == '{');
+        assert(rule[i + 1] == '%');
+        i += 2;
+
+        const name_start = i;
+        while (rule[i] != '}') : (i += 1) {}
+        const name = rule[name_start..i];
+        assert(rule[i] == '}');
+        i += 1;
+
+        const val = ctx.vals.get(name) orelse {
+            log.err("no argument found for key '{s}'", .{name});
+            try writer.print("[UNDEFINED KEY \"{s}\"]", .{name});
+            continue;
+        };
+
+        // TODO properly render value
+        try writer.writeAll(val.val.str);
+    }
 }
