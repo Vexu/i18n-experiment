@@ -90,8 +90,17 @@ pub fn format(
         // Find the closing brace
         inline while (i < fmt.len and fmt[i] != '}' and fmt[i] != '%') : (i += 1) {}
         const fmt_end = i;
-        inline while (i < fmt.len and fmt[i] != '}') : (i += 1) {}
-        const name_end = i;
+        if (fmt[i] == '%') {
+            i += 1;
+        }
+        inline while (i < fmt.len) : (i += 1) {
+            switch (fmt[i]) {
+                '0'...'9', 'a'...'z', 'A'...'Z' => {},
+                '}' => break,
+                else => @compileError("invalid character in argument name"),
+            }
+        }
+        const key_end = i;
 
         if (i >= fmt.len) {
             @compileError("missing closing }");
@@ -130,9 +139,9 @@ pub fn format(
             .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
                 @compileError("no argument with name '" ++ arg_name ++ "'"),
         };
-        const arg_name = comptime if (fmt_end != name_end) blk: {
-            if (placeholder.arg != .none) @compileError("cannot specify translation key and argument specifier");
-            break :blk fmt[fmt_end + 1 .. name_end];
+        const arg_name = comptime if (fmt_end != key_end) blk: {
+            if (placeholder.arg != .none) @compileError("cannot specify argument name and argument specifier");
+            break :blk fmt[fmt_end + 1 .. key_end];
         } else switch (placeholder.arg) {
             .named => |arg_name| arg_name,
             else => std.fmt.comptimePrint("{d}", .{arg_pos}),
@@ -188,7 +197,7 @@ test "parsing a simple definition" {
 
     out_buf.items.len = 0;
     try ctx.format(out_buf.writer(), "Bye {s:%name}!", .{"Veikka"});
-    try expectEqualStrings("Heippa [UNDEFINED KEY \"foo\"]!", out_buf.items);
+    try expectEqualStrings("Heippa [UNDEFINED ARGUMENT %foo]!", out_buf.items);
 }
 
 pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
@@ -232,11 +241,7 @@ fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
         assert(rule[i] == '}');
         i += 1;
 
-        const val = ctx.vals.get(name) orelse {
-            log.err("no argument found for key '{s}'", .{name});
-            try writer.print("[UNDEFINED KEY \"{s}\"]", .{name});
-            continue;
-        };
+        const val = ctx.vals.get(name).?;
 
         // TODO properly render value
         try writer.writeAll(val.val.str);

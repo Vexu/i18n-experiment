@@ -68,14 +68,8 @@ pub const Program = struct {
 pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
     var defs = Definitions.init(gpa);
     errdefer defs.deinit();
-    var parser = Parser{
-        .defs = &defs,
-        .string_buf = std.ArrayList(u8).init(gpa),
-        .inst_buf = std.ArrayList(Program.Instruction).init(gpa),
-        .input = input,
-    };
-    defer parser.string_buf.deinit();
-    defer parser.inst_buf.deinit();
+    var parser = Parser.init(gpa, &defs, input);
+    defer parser.deinit();
 
     var warned = false;
     while (true) {
@@ -101,6 +95,26 @@ const Parser = struct {
     i: usize = 0,
     line: usize = 1,
     col: usize = 1,
+    arg_names: std.ArrayList([]const u8),
+
+    const invalid_args = std.math.maxInt(usize);
+
+    fn init(gpa: Allocator, defs: *Definitions, input: [:0]const u8) Parser {
+        return .{
+            .defs = defs,
+            .string_buf = std.ArrayList(u8).init(gpa),
+            .inst_buf = std.ArrayList(Program.Instruction).init(gpa),
+            .input = input,
+            .arg_names = std.ArrayList([]const u8).init(gpa),
+        };
+    }
+
+    fn deinit(parser: *Parser) void {
+        parser.string_buf.deinit();
+        parser.inst_buf.deinit();
+        parser.arg_names.deinit();
+        parser.* = undefined;
+    }
 
     fn skipWhitespace(parser: *Parser) void {
         while (true) switch (parser.input[parser.i]) {
@@ -146,7 +160,7 @@ const Parser = struct {
         if (!parser.skip("def")) return false;
 
         parser.skipWhitespace();
-        var opt_def_name = try parser.str();
+        var opt_def_name = try parser.str(.collect);
         var gop: @TypeOf(parser.defs.rules).GetOrPutResult = undefined;
         if (opt_def_name) |def_name| {
             gop = try parser.defs.rules.getOrPut(parser.inst_buf.allocator, def_name);
@@ -157,6 +171,7 @@ const Parser = struct {
         } else {
             parser.warn("ignoring unnamed definition", .{});
         }
+        if (opt_def_name == null) parser.arg_names.items.len = invalid_args;
         errdefer if (opt_def_name) |def_name| assert(parser.defs.rules.remove(def_name));
 
         parser.inst_buf.items.len = 0;
@@ -184,18 +199,21 @@ const Parser = struct {
         return true;
     }
 
-    fn str(parser: *Parser) !?[]u8 {
-        const start = parser.i;
+    const ArgMode = enum { collect, check, ignore };
+
+    fn str(parser: *Parser, arg_mode: ArgMode) !?[]u8 {
+        if (arg_mode == .collect) parser.arg_names.items.len = 0;
+        const start = parser.i + 1;
         if (parser.input[parser.i] != '"') return null;
         var escape = true;
+        parser.string_buf.items.len = 0;
         while (true) {
             const c = parser.input[parser.i];
-            parser.i += 1;
-            parser.col += 1;
             if (c == 0) {
                 parser.warn("invalid null byte in string", .{});
                 return null;
             }
+            parser.i += 1;
             if (escape) {
                 escape = false;
             } else if (c == '\\') {
@@ -205,10 +223,113 @@ const Parser = struct {
             }
         }
         const slice = parser.input[start..parser.i];
-        parser.string_buf.items.len = 0;
-        const res = try std.zig.string_literal.parseWrite(parser.string_buf.writer(), slice);
-        if (res != .success) parser.warn("invalid string '{s}'", .{slice});
+        var i: usize = 0;
+        while (true) {
+            const c = slice[i];
+            switch (c) {
+                '\\' => {
+                    const escape_char_index = i + 1;
+                    const result = std.zig.string_literal.parseEscapeSequence(slice, &i);
+                    parser.col += (i - escape_char_index) + 1;
+                    switch (result) {
+                        .success => |codepoint| {
+                            if (slice[escape_char_index] == 'u') {
+                                var buf: [4]u8 = undefined;
+                                const len = std.unicode.utf8Encode(codepoint, &buf) catch {
+                                    parser.warn("invalid unicode codepoint in escape sequence", .{});
+                                    continue;
+                                };
+                                try parser.string_buf.appendSlice(buf[0..len]);
+                            } else {
+                                try parser.string_buf.append(@intCast(u8, codepoint));
+                            }
+                        },
+                        .failure => {
+                            parser.warn("invalid escape sequence", .{});
+                            continue;
+                        },
+                    }
+                },
+                '\n' => {
+                    try parser.string_buf.append(c);
+                    parser.line += 1;
+                    parser.col = 1;
+                    i += 1;
+                },
+                '"' => break,
+                '{', '}' => try parser.strArg(slice, &i, arg_mode),
+                else => {
+                    try parser.string_buf.append(c);
+                    parser.col += 1;
+                    i += 1;
+                },
+            }
+        }
         return try parser.defs.arena.allocator().dupe(u8, parser.string_buf.items);
+    }
+
+    fn strArg(parser: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !void {
+        const c = slice[offset.*];
+        if (arg_mode == .ignore) {
+            try parser.string_buf.append(c);
+            parser.col += 1;
+            offset.* += 1;
+            return;
+        }
+        if (c == slice[offset.* + 1]) {
+            try parser.string_buf.appendNTimes(c, 2);
+            parser.col += 2;
+            offset.* += 2;
+            return;
+        }
+        if (c == '}') {
+            parser.warn("unescaped '}}' in string", .{});
+            try parser.string_buf.appendNTimes(c, 2);
+            parser.col += 1;
+            offset.* += 1;
+            return;
+        }
+        if (slice[offset.* + 1] != '%') {
+            parser.warn("expected '%' after '{{'", .{});
+            try parser.string_buf.appendNTimes(c, 2);
+            parser.col += 1;
+            offset.* += 1;
+            return;
+        }
+        offset.* += 2;
+        const start = offset.*;
+        while (true) switch (slice[offset.*]) {
+            '0'...'9', 'a'...'z', 'A'...'Z' => {
+                offset.* += 1;
+                parser.col += 1;
+            },
+            '}' => break,
+            else => {
+                parser.warn("invalid character in argument name", .{});
+                return;
+            },
+        };
+        const arg_name = slice[start..offset.*];
+        offset.* += 1;
+        parser.col += 1;
+
+        if (arg_mode == .collect) {
+            try parser.arg_names.append(arg_name);
+        } else if (parser.arg_names.items.len != invalid_args) {
+            for (parser.arg_names.items) |item| {
+                if (mem.eql(u8, item, arg_name)) break;
+            } else {
+                parser.warn("use of undefined argument '%{s}'", .{arg_name});
+                try parser.string_buf.appendSlice("[UNDEFINED ARGUMENT %");
+                try parser.string_buf.appendSlice(arg_name);
+                try parser.string_buf.appendSlice("]");
+                return;
+            }
+        }
+
+        try parser.string_buf.appendSlice("{%");
+        try parser.string_buf.appendSlice(arg_name);
+        try parser.string_buf.append('}');
     }
 
     fn arg(parser: *Parser) !?[]const u8 {
@@ -225,7 +346,16 @@ const Parser = struct {
             parser.warn("expected argument name after '%'", .{});
             return null;
         }
-        return parser.input[start..parser.i];
+        const arg_name = parser.input[start..parser.i];
+        if (parser.arg_names.items.len != invalid_args) {
+            for (parser.arg_names.items) |item| {
+                if (mem.eql(u8, item, arg_name)) break;
+            } else {
+                parser.warn("use of undefined argument '%{s}'", .{arg_name});
+                return null;
+            }
+        }
+        return try parser.defs.arena.allocator().dupe(u8, arg_name);
     }
 
     fn stmt(parser: *Parser) !bool {
@@ -244,7 +374,7 @@ const Parser = struct {
         } else if (parser.skip("if")) {
             // TODO
             return true;
-        } else if (try parser.str()) |some| {
+        } else if (try parser.str(.check)) |some| {
             try parser.inst_buf.append(.{ .str = some });
             return true;
         } else {
@@ -257,7 +387,7 @@ const Parser = struct {
             return .{ .bool = true };
         } else if (parser.skip("false")) {
             return .{ .bool = false };
-        } else if (try parser.str()) |some| {
+        } else if (try parser.str(.ignore)) |some| {
             return .{ .str = some };
         } else {
             // TODO numbers

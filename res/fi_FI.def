@@ -7,11 +7,7 @@ def "{%member}expected {%variadic}{%expected} argument(s), found {%actual}"
     if %variadic != ""
         set %variadic to "vähintään"
     end
-    if %expected = 1
-        "{%member}funktio ottaa {%variadic}yhden argumentin, löytyi {%actual}"
-    else
-        "{%member}funktio ottaa {%variadic}{%expected} argumenttia, löytyi {%actual}"
-    end
+    "{%member}funktio ottaa {%variadic}{%expected} argumenttia, mutta sai {%actual}"
 end
 
 def "foo {%0} {{%foo}}"
