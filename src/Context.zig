@@ -47,7 +47,10 @@ pub fn format(
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
     comptime var i = 0;
+    comptime var query_str: []const u8 = "";
     inline while (i < fmt.len) {
+        const start_index = i;
+
         inline while (i < fmt.len) : (i += 1) {
             switch (fmt[i]) {
                 '{', '}' => break,
@@ -67,6 +70,11 @@ pub fn format(
             i += 2;
         }
 
+        // Write out the literal
+        if (start_index != end_index) {
+            query_str = query_str ++ fmt[start_index..end_index];
+        }
+
         // We've already skipped the other brace, restart the loop
         if (unescape_brace) continue;
 
@@ -82,8 +90,10 @@ pub fn format(
 
         const fmt_begin = i;
         // Find the closing brace
-        inline while (i < fmt.len and fmt[i] != '}') : (i += 1) {}
+        inline while (i < fmt.len and fmt[i] != '}' and fmt[i] != '%') : (i += 1) {}
         const fmt_end = i;
+        inline while (i < fmt.len and fmt[i] != '}') : (i += 1) {}
+        const name_end = i;
 
         if (i >= fmt.len) {
             @compileError("missing closing }");
@@ -122,10 +132,14 @@ pub fn format(
             .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
                 @compileError("no argument with name '" ++ arg_name ++ "'"),
         };
-        const arg_name = comptime switch (placeholder.arg) {
+        const arg_name = comptime if (fmt_end != name_end) blk: {
+            if (placeholder.arg != .none) @compileError("cannot specify translation key and argument specifier");
+            break :blk fmt[fmt_end + 1 .. name_end];
+        } else switch (placeholder.arg) {
             .named => |arg_name| arg_name,
             else => std.fmt.comptimePrint("{d}", .{arg_pos}),
         };
+        query_str = query_str ++ "{%" ++ arg_name ++ "}";
         context.vals.putAssumeCapacity(arg_name, .{
             .val = try lib.Value.from(@field(args, fields_info[arg_pos].name)),
             .opts = .{
@@ -152,8 +166,8 @@ pub fn format(
 test "parsing a simple definition" {
     const input =
         \\# Comment explaining something about this translation
-        \\def "Hello {%1}!"
-        \\"Moikka {%1}!"
+        \\def "Hello {%name}!"
+        \\    "Moikka {%name}!"
         \\end
         \\
     ;
@@ -166,7 +180,7 @@ test "parsing a simple definition" {
     var out_buf = std.ArrayList(u8).init(std.testing.allocator);
     defer out_buf.deinit();
 
-    try ctx.format(out_buf.writer(), "Hello {s}!", .{"Veikka"});
+    try ctx.format(out_buf.writer(), "Hello {s:%name}!", .{"Veikka"});
     if (true) return error.SkipZigTest; // TODO
     try expectEqualStrings("Moikka Veikka!", out_buf.items);
 }

@@ -269,8 +269,8 @@ const Parser = struct {
 test "parsing a simple definition" {
     const input =
         \\# Comment explaining something about this translation
-        \\def "Hello {%1}!"
-        \\"Moikka {%1}!"
+        \\def "Hello {%0}!"
+        \\    "Moikka {%0}!"
         \\end
         \\
     ;
@@ -278,10 +278,10 @@ test "parsing a simple definition" {
     defer defs.deinit();
 
     try expect(defs.rules.count() == 1);
-    const rule = defs.rules.get("Hello {%1}!");
+    const rule = defs.rules.get("Hello {%0}!");
     try expect(rule != null);
     const body = rule.?.body;
     try expect(body[0] == .str);
-    try expectEqualStrings("Moikka {%1}!", body[0].str);
+    try expectEqualStrings("Moikka {%0}!", body[0].str);
     try expect(body[1] == .end);
 }

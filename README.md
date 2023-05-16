@@ -9,12 +9,12 @@ where the format string becomes the key for translation.
 
 Translations are specified in `$LOCALE.def` files so for code like
 ```zig
-i18n.format(writer, "Hello {s}!", .{name});
+i18n.format(writer, "Hello {s%name}!", .{name});
 ```
 A finnish translation file `fi_FI.def` would contain something like:
 ```
 # Comment explaining something about this translation
-def "Hello {%1}!"
-"Moikka {%1}!"
+def "Hello {%name}!"
+    "Moikka {%name}!"
 end
 ```
