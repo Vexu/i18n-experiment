@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const assert = std.debug.assert;
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -8,15 +9,16 @@ const lib = @import("lib.zig");
 
 const Context = @This();
 
-defs: lib.Definitions,
+defs: lib.Definitions = .{},
 vals: std.StringHashMapUnmanaged(struct {
     val: lib.Value,
     opts: std.fmt.FormatOptions,
 }) = .{},
+gpa: Allocator,
 
 pub fn deinit(ctx: *Context) void {
-    ctx.vals.deinit(ctx.defs.arena.child_allocator);
-    ctx.defs.deinit();
+    ctx.vals.deinit(ctx.gpa);
+    ctx.defs.deinit(ctx.gpa);
     ctx.* = undefined;
 }
 
@@ -26,7 +28,6 @@ pub fn format(
     comptime fmt: []const u8,
     args: anytype,
 ) !void {
-    const gpa = ctx.defs.arena.child_allocator;
     const ArgsType = @TypeOf(args);
     const args_type_info = @typeInfo(ArgsType);
     if (args_type_info != .Struct) {
@@ -40,7 +41,7 @@ pub fn format(
     }
 
     ctx.vals.clearRetainingCapacity();
-    try ctx.vals.ensureTotalCapacity(gpa, max_format_args);
+    try ctx.vals.ensureTotalCapacity(ctx.gpa, max_format_args);
 
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
@@ -185,7 +186,7 @@ test "parsing a simple definition" {
     ;
     var ctx = ctx: {
         var defs = try lib.Definitions.parse(std.testing.allocator, input);
-        break :ctx Context{ .defs = defs };
+        break :ctx Context{ .defs = defs, .gpa = std.testing.allocator };
     };
     defer ctx.deinit();
 
@@ -203,7 +204,7 @@ test "parsing a simple definition" {
 pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
     const rule = ctx.defs.rules.get(key) orelse return null;
     // TODO execute rule
-    return rule.body[0].str;
+    return ctx.defs.getExtra(.str, @intToEnum(lib.Definitions.Inst.Ref, ctx.defs.extra.items[rule]));
 }
 
 fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
