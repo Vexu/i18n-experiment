@@ -9,11 +9,16 @@ const lib = @import("lib.zig");
 
 const Context = @This();
 
+const Options = struct {
+    fmt_options: std.fmt.FormatOptions,
+    kind: enum { decimal, scientific, hex },
+    case: std.fmt.Case,
+    base: u8,
+};
+const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
+
 defs: lib.Definitions = .{},
-vals: std.StringHashMapUnmanaged(struct {
-    val: lib.Value,
-    options: std.fmt.FormatOptions,
-}) = .{},
+vals: std.StringHashMapUnmanaged(lib.Value) = .{},
 arena: ArenaAllocator,
 
 pub fn deinit(ctx: *Context) void {
@@ -36,7 +41,6 @@ pub fn format(
     }
 
     const fields_info = args_type_info.Struct.fields;
-    const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
     if (fields_info.len > max_format_args) {
         @compileError("32 arguments max are supported per format call");
     }
@@ -44,10 +48,12 @@ pub fn format(
     ctx.vals.clearRetainingCapacity();
     _ = ctx.arena.reset(.{ .retain_with_limit = 4069 });
     try ctx.vals.ensureTotalCapacity(ctx.arena.child_allocator, max_format_args);
+    var options: [max_format_args]Options = undefined;
 
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
     comptime var i = 0;
+    comptime var options_i = 0;
     comptime var query_str: []const u8 = "";
     inline while (i < fmt.len) {
         const start_index = i;
@@ -135,13 +141,12 @@ pub fn format(
                 break :blk @field(args, arg_name);
             },
         };
-        const arg_pos = comptime switch (placeholder.arg) {
-            .none => arg_state.nextArg(null) orelse
-                @compileError("too few arguments"),
+        const arg_pos = comptime arg_state.nextArg(switch (placeholder.arg) {
+            .none => null,
             .number => |pos| pos,
             .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
                 @compileError("no argument with name '" ++ arg_name ++ "'"),
-        };
+        }) orelse @compileError("too few arguments");
         const arg_name = comptime if (fmt_end != key_end) blk: {
             if (placeholder.arg != .none) @compileError("cannot specify argument name and argument specifier");
             break :blk fmt[fmt_end + 1 .. key_end];
@@ -150,16 +155,36 @@ pub fn format(
             else => std.fmt.comptimePrint("{d}", .{arg_pos}),
         };
         query_str = query_str ++ "{%" ++ arg_name ++ "}";
-        const options = std.fmt.FormatOptions{
+        const fmt_options = std.fmt.FormatOptions{
             .fill = placeholder.fill,
             .alignment = placeholder.alignment,
             .width = width,
             .precision = precision,
         };
-        ctx.vals.putAssumeCapacity(arg_name, .{
-            .val = try lib.Value.from(&ctx.arena, @field(args, fields_info[arg_pos].name), placeholder.specifier_arg, options),
-            .options = options,
-        });
+        const spec = placeholder.specifier_arg;
+        ctx.vals.putAssumeCapacity(
+            arg_name,
+            try lib.Value.from(&ctx.arena, @field(args, fields_info[arg_pos].name), spec, fmt_options),
+        );
+        options[options_i] = comptime .{
+            .fmt_options = fmt_options,
+            .case = if (std.mem.eql(u8, spec, "X")) .upper else .lower,
+            .base = if (std.mem.eql(u8, spec, "b"))
+                2
+            else if (std.mem.eql(u8, spec, "o"))
+                8
+            else if (std.mem.eql(u8, spec, "x") or std.mem.eql(u8, spec, "X"))
+                16
+            else
+                10,
+            .kind = if (std.mem.eql(u8, spec, "d"))
+                .decimal
+            else if (std.mem.eql(u8, spec, "x"))
+                .hex
+            else
+                .scientific,
+        };
+        options_i += 1;
     }
 
     if (comptime arg_state.hasUnusedArgs()) {
@@ -172,7 +197,7 @@ pub fn format(
     }
 
     const rule = (try ctx.query(query_str)) orelse query_str;
-    try ctx.render(rule, writer);
+    try ctx.render(rule, &options, writer);
 }
 
 pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
@@ -181,8 +206,9 @@ pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
     return ctx.defs.getExtra(.str, @intToEnum(lib.Definitions.Inst.Ref, ctx.defs.extra.items[rule]));
 }
 
-fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
+fn render(ctx: *Context, rule: []const u8, options: *[max_format_args]Options, writer: anytype) !void {
     var i: usize = 0;
+    var options_i: u8 = 0;
     while (i < rule.len) {
         const start_index = i;
         while (i < rule.len) : (i += 1) {
@@ -217,13 +243,21 @@ fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
         i += 1;
 
         const val = ctx.vals.get(name).?;
-
-        switch (val.val) {
+        const opts = options[options_i];
+        options_i += 1;
+        switch (val) {
             .str, .preformatted => |str| try writer.writeAll(str),
-            .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", val.options, writer),
-            // TODO specifier string
-            .int => |int| try std.fmt.formatIntValue(int, "d", val.options, writer),
-            .float => |float| try std.fmt.formatFloatDecimal(float, val.options, writer),
+            .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", opts.fmt_options, writer),
+            .int => |int| {
+                try std.fmt.formatInt(int, opts.base, opts.case, opts.fmt_options, writer);
+            },
+            .float => |float| {
+                switch (opts.kind) {
+                    .decimal => try std.fmt.formatFloatDecimal(float, opts.fmt_options, writer),
+                    .hex => try std.fmt.formatFloatHexadecimal(float, opts.fmt_options, writer),
+                    .scientific => try std.fmt.formatFloatScientific(float, opts.fmt_options, writer),
+                }
+            },
         }
     }
 }

@@ -38,6 +38,18 @@ test "complex value" {
     );
 }
 
+test "numbers in binary" {
+    try testFormat(
+        \\def "{%0} in binary is {%0}"
+        \\    "{%0} on binäärinä {%0}"
+        \\end
+    ,
+        "{[0]} in binary is {[0]b}",
+        .{12},
+        "12 on binäärinä 1100",
+    );
+}
+
 fn testFormat(input: [:0]const u8, comptime fmt: []const u8, args: anytype, expected: []const u8) !void {
     const a = std.testing.allocator;
     var ctx = ctx: {

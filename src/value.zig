@@ -25,20 +25,20 @@ pub const Value = union(enum) {
                     return .{ .str = value };
                 }
             },
-            .Int => {
-                if (fmt.len > 1 or switch (fmt[0]) {
-                    'd', 'c', 'u', 'b', 'x', 'X', 'o' => true,
-                    else => false,
-                }) std.fmt.invalidFmtError(fmt, value);
+            .ComptimeInt, .Int => {
+                if ((fmt.len == 1 and switch (fmt[0]) {
+                    'd', 'c', 'u', 'b', 'x', 'X', 'o' => false,
+                    else => true,
+                }) or fmt.len > 1) std.fmt.invalidFmtError(fmt, value);
                 if (std.math.cast(i64, value)) |some| {
                     return .{ .int = some };
                 }
             },
-            .Float => {
-                if (fmt.len > 1 or switch (fmt[0]) {
+            .ComptimeFloat, .Float => {
+                if ((fmt.len == 1 and switch (fmt[0]) {
                     'e', 'd', 'x' => true,
-                    else => false,
-                }) std.fmt.invalidFmtError(fmt, value);
+                    else => true,
+                }) or fmt.len > 1) std.fmt.invalidFmtError(fmt, value);
                 return .{ .int = value };
             },
             else => {},
