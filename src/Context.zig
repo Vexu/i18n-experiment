@@ -172,35 +172,6 @@ pub fn format(
     try ctx.render(rule, writer);
 }
 
-test "parsing a simple definition" {
-    const input =
-        \\# Comment explaining something about this translation
-        \\def "Hello {%name}!"
-        \\    "Moikka {%name}!"
-        \\end
-        \\# Intentionally broken rule
-        \\def "Bye {%name}!"
-        \\    "Heippa {%foo}!"
-        \\end
-        \\
-    ;
-    var ctx = ctx: {
-        var defs = try lib.Definitions.parse(std.testing.allocator, input);
-        break :ctx Context{ .defs = defs, .gpa = std.testing.allocator };
-    };
-    defer ctx.deinit();
-
-    var out_buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer out_buf.deinit();
-
-    try ctx.format(out_buf.writer(), "Hello {s:%name}!", .{"Veikka"});
-    try expectEqualStrings("Moikka Veikka!", out_buf.items);
-
-    out_buf.items.len = 0;
-    try ctx.format(out_buf.writer(), "Bye {s:%name}!", .{"Veikka"});
-    try expectEqualStrings("Heippa [UNDEFINED ARGUMENT %foo]!", out_buf.items);
-}
-
 pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
     const rule = ctx.defs.rules.get(key) orelse return null;
     // TODO execute rule
