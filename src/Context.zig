@@ -12,13 +12,14 @@ const Context = @This();
 defs: lib.Definitions = .{},
 vals: std.StringHashMapUnmanaged(struct {
     val: lib.Value,
-    opts: std.fmt.FormatOptions,
+    options: std.fmt.FormatOptions,
 }) = .{},
-gpa: Allocator,
+arena: ArenaAllocator,
 
 pub fn deinit(ctx: *Context) void {
-    ctx.vals.deinit(ctx.gpa);
-    ctx.defs.deinit(ctx.gpa);
+    ctx.vals.deinit(ctx.arena.child_allocator);
+    ctx.defs.deinit(ctx.arena.child_allocator);
+    ctx.arena.deinit();
     ctx.* = undefined;
 }
 
@@ -41,7 +42,8 @@ pub fn format(
     }
 
     ctx.vals.clearRetainingCapacity();
-    try ctx.vals.ensureTotalCapacity(ctx.gpa, max_format_args);
+    _ = ctx.arena.reset(.{ .retain_with_limit = 4069 });
+    try ctx.vals.ensureTotalCapacity(ctx.arena.child_allocator, max_format_args);
 
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
@@ -148,14 +150,15 @@ pub fn format(
             else => std.fmt.comptimePrint("{d}", .{arg_pos}),
         };
         query_str = query_str ++ "{%" ++ arg_name ++ "}";
+        const options = std.fmt.FormatOptions{
+            .fill = placeholder.fill,
+            .alignment = placeholder.alignment,
+            .width = width,
+            .precision = precision,
+        };
         ctx.vals.putAssumeCapacity(arg_name, .{
-            .val = try lib.Value.from(@field(args, fields_info[arg_pos].name)),
-            .opts = .{
-                .fill = placeholder.fill,
-                .alignment = placeholder.alignment,
-                .width = width,
-                .precision = precision,
-            },
+            .val = try lib.Value.from(&ctx.arena, @field(args, fields_info[arg_pos].name), placeholder.specifier_arg, options),
+            .options = options,
         });
     }
 
@@ -215,7 +218,12 @@ fn render(ctx: *Context, rule: []const u8, writer: anytype) !void {
 
         const val = ctx.vals.get(name).?;
 
-        // TODO properly render value
-        try writer.writeAll(val.val.str);
+        switch (val.val) {
+            .str, .preformatted => |str| try writer.writeAll(str),
+            .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", val.options, writer),
+            // TODO specifier string
+            .int => |int| try std.fmt.formatIntValue(int, "d", val.options, writer),
+            .float => |float| try std.fmt.formatFloatDecimal(float, val.options, writer),
+        }
     }
 }

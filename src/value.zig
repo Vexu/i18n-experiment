@@ -2,69 +2,51 @@ const std = @import("std");
 const lib = @import("lib.zig");
 
 pub const Value = union(enum) {
+    bool: bool,
     int: i64,
-    big_int: std.math.big.int.Const,
     float: f64,
-    optional: ?*Value,
-    err_union: struct {
-        code: anyerror,
-        payload: ?*Value,
-    },
-    err_set: anyerror,
-    @"enum": *Value,
-    @"union": *Union,
-    pointer: usize,
     str: []const u8,
-    arr: []Value,
-    enum_lit: []const u8,
+    preformatted: []const u8,
 
-    pub const Union = struct {
-        ty_name: []const u8,
-        tag: []const u8,
-        val: Value,
-    };
-    pub const Struct = struct {
-        ty_name: []const u8,
-        fields: []struct {
-            name: []const u8,
-            val: Value,
-        },
-    };
-
-    pub fn from(value: anytype) !Value {
+    pub fn from(
+        arena: *std.heap.ArenaAllocator,
+        value: anytype,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+    ) !Value {
         const T = @TypeOf(value);
-        if (comptime std.meta.trait.hasFn("format")(T)) {
-            @compileError("TODO custom format functions");
-        }
         switch (@typeInfo(T)) {
-            .Void => {
-                return .{ .str = "void" };
-            },
             .Bool => {
-                return .{ .str = if (value) "true" else "false" };
+                if (fmt.len != 0) std.fmt.invalidFmtError(fmt, value);
+                return .{ .bool = value };
             },
             .Pointer => {
-                if (comptime std.meta.trait.isZigString(T)) {
+                if (comptime std.mem.eql(u8, fmt, "s") and std.meta.trait.isZigString(T)) {
                     return .{ .str = value };
                 }
-                @compileError("TODO ptr");
             },
-            .Array => |info| {
-                if (info.child == u8) {
-                    return .{ .str = value };
+            .Int => {
+                if (fmt.len > 1 or switch (fmt[0]) {
+                    'd', 'c', 'u', 'b', 'x', 'X', 'o' => true,
+                    else => false,
+                }) std.fmt.invalidFmtError(fmt, value);
+                if (std.math.cast(i64, value)) |some| {
+                    return .{ .int = some };
                 }
-                @compileError("TODO array");
             },
-            .Type => {
-                return .{ .str = @typeName(value) };
+            .Float => {
+                if (fmt.len > 1 or switch (fmt[0]) {
+                    'e', 'd', 'x' => true,
+                    else => false,
+                }) std.fmt.invalidFmtError(fmt, value);
+                return .{ .int = value };
             },
-            .EnumLiteral => {
-                return .{ .str = [_]u8{'.'} ++ @tagName(value) };
-            },
-            .Null => {
-                return .{ .str = "null" };
-            },
-            else => @compileError("unable to format type '" ++ @typeName(T) ++ "'"),
+            else => {},
         }
+        var out_buf = std.ArrayList(u8).init(arena.child_allocator);
+        defer out_buf.deinit();
+        try std.fmt.formatType(value, fmt, options, out_buf.writer(), std.options.fmt_max_depth);
+
+        return .{ .preformatted = try arena.allocator().dupe(u8, out_buf.items) };
     }
 };
