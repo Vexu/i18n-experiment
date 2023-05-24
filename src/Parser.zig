@@ -5,11 +5,11 @@ const log = std.log.scoped(.i18n);
 const math = std.math;
 const mem = std.mem;
 const lib = @import("lib.zig");
-const Definitions = lib.Definitions;
-const Inst = lib.Definitions.Inst;
+const Inst = lib.Code.Inst;
 
 const Parser = @This();
 
+const invalid_args = std.math.maxInt(u32);
 const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
 const ArgPos = enum(u8) {
     @"var" = 0xFF,
@@ -20,11 +20,7 @@ const ArgPos = enum(u8) {
     }
 };
 
-rules: std.StringHashMapUnmanaged(u32) = .{},
-insts: std.MultiArrayList(Inst) = .{},
-extra: std.ArrayListUnmanaged(u32) = .{},
-strings: std.ArrayListUnmanaged(u8) = .{},
-
+ctx: *lib.Context,
 inst_buf: std.ArrayListUnmanaged(Inst.Ref) = .{},
 arg_names: std.StringHashMapUnmanaged(ArgPos) = .{},
 
@@ -34,14 +30,9 @@ line: usize = 1,
 col: usize = 1,
 gpa: Allocator,
 
-pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
-    var parser = Parser{ .gpa = gpa, .input = input };
-    errdefer {
-        parser.rules.deinit(gpa);
-        parser.insts.deinit(gpa);
-        parser.extra.deinit(gpa);
-        parser.strings.deinit(gpa);
-    }
+pub fn parse(ctx: *lib.Context, input: [:0]const u8) !void {
+    const gpa = ctx.arena.child_allocator;
+    var parser = Parser{ .ctx = ctx, .gpa = gpa, .input = input };
     defer {
         parser.inst_buf.deinit(gpa);
         parser.arg_names.deinit(gpa);
@@ -60,64 +51,10 @@ pub fn parse(gpa: Allocator, input: [:0]const u8) !Definitions {
             parser.index += 1;
         }
     }
-    return .{
-        .rules = parser.rules,
-        .insts = parser.insts,
-        .extra = parser.extra,
-        .strings = parser.strings,
-    };
 }
 
-const invalid_args = std.math.maxInt(u32);
-
 fn addInst(p: *Parser, comptime op: Inst.Op, input: op.Data()) !Inst.Ref {
-    const ref = @intToEnum(Inst.Ref, p.insts.len);
-    try p.insts.append(p.gpa, .{
-        .op = op,
-        .data = switch (op) {
-            .end => undefined,
-            .set_arg => .{
-                .lhs = @intToEnum(Inst.Ref, input.pos),
-                .rhs = input.operand,
-            },
-            .set_var => blk: {
-                const offset = p.strings.items.len;
-                try p.strings.appendSlice(p.gpa, input.@"var");
-
-                const extra_index = p.extra.items.len;
-                try p.extra.append(p.gpa, @intCast(u32, offset));
-                try p.extra.append(p.gpa, @intCast(u32, input.@"var".len));
-                break :blk .{
-                    .lhs = @intToEnum(Inst.Ref, extra_index),
-                    .rhs = input.operand,
-                };
-            },
-            .@"if" => blk: {
-                const extra_index = p.extra.items.len;
-                try p.extra.append(p.gpa, input.then_body);
-                try p.extra.append(p.gpa, input.else_body);
-                break :blk .{
-                    .lhs = input.cond,
-                    .rhs = @intToEnum(Inst.Ref, extra_index),
-                };
-            },
-            .@"var", .str => blk: {
-                const offset = p.strings.items.len;
-                try p.strings.appendSlice(p.gpa, input);
-                break :blk .{
-                    .lhs = @intToEnum(Inst.Ref, offset),
-                    .rhs = @intToEnum(Inst.Ref, input.len),
-                };
-            },
-            .arg => .{ .lhs = @intToEnum(Inst.Ref, input), .rhs = undefined },
-            .bool => .{ .lhs = @intToEnum(Inst.Ref, @boolToInt(input)), .rhs = undefined },
-            .int => @bitCast(Inst.Data, input),
-            .float => @bitCast(Inst.Data, input),
-            .not => .{ .lhs = input, .rhs = undefined },
-            else => input,
-        },
-    });
-    return ref;
+    return p.ctx.code.addInst(p.gpa, op, input);
 }
 
 fn skipWhitespace(p: *Parser) void {
@@ -164,21 +101,22 @@ fn def(p: *Parser) !bool {
     if (!p.skip("def")) return false;
 
     p.skipWhitespace();
-    const start_len = p.strings.items.len;
+    const strings = &p.ctx.code.strings;
+    const start_len = strings.items.len;
     var opt_def_name = try p.str(.collect);
-    var gop: @TypeOf(p.rules).GetOrPutResult = undefined;
+    var gop: @TypeOf(p.ctx.defs).GetOrPutResult = undefined;
     if (opt_def_name) |def_name| {
         // TODO handle this better
         const name_str = blk: {
-            const data = p.insts.items(.data)[@enumToInt(def_name)];
+            const data = p.ctx.code.insts.items(.data)[@enumToInt(def_name)];
             const offset = @enumToInt(data.lhs);
             const len = @enumToInt(data.rhs);
-            const name_str = p.strings.items[offset..][0..len];
+            const name_str = strings.items[offset..][0..len];
             break :blk try p.gpa.dupe(u8, name_str);
         };
 
-        p.strings.items.len = start_len;
-        gop = try p.rules.getOrPut(p.gpa, name_str);
+        strings.items.len = start_len;
+        gop = try p.ctx.defs.getOrPut(p.gpa, name_str);
         if (gop.found_existing) {
             p.warn("ignoring duplicate definition for '{s}'", .{name_str});
             opt_def_name = null;
@@ -187,7 +125,7 @@ fn def(p: *Parser) !bool {
         p.warn("ignoring unnamed definition", .{});
     }
     if (opt_def_name == null) p.arg_names.size = invalid_args;
-    errdefer if (opt_def_name) |_| assert(p.rules.remove(gop.key_ptr.*));
+    errdefer if (opt_def_name) |_| assert(p.ctx.defs.remove(gop.key_ptr.*));
 
     p.inst_buf.items.len = 0;
     var warned = false;
@@ -210,9 +148,9 @@ fn def(p: *Parser) !bool {
 
     const end_inst = try p.addInst(.end, {});
     try p.inst_buf.append(p.gpa, end_inst);
-    const body = @intCast(u32, p.extra.items.len);
-    try p.extra.appendSlice(p.gpa, @ptrCast([]u32, p.inst_buf.items));
-    gop.value_ptr.* = body;
+    const body = @intCast(u32, p.ctx.code.extra.items.len);
+    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast([]u32, p.inst_buf.items));
+    gop.value_ptr.* = .{ .body = body };
     return true;
 }
 
@@ -240,9 +178,10 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
         }
     }
 
-    const offset = p.strings.items.len;
+    const strings = &p.ctx.code.strings;
+    const offset = strings.items.len;
     const slice = p.input[start..p.index];
-    try p.strings.ensureUnusedCapacity(p.gpa, slice.len);
+    try strings.ensureUnusedCapacity(p.gpa, slice.len);
     var i: usize = 0;
     while (true) {
         switch (slice[i]) {
@@ -258,9 +197,9 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
                                 p.warn("invalid unicode codepoint in escape sequence", .{});
                                 continue;
                             };
-                            p.strings.appendSliceAssumeCapacity(buf[0..len]);
+                            strings.appendSliceAssumeCapacity(buf[0..len]);
                         } else {
-                            p.strings.appendAssumeCapacity(@intCast(u8, codepoint));
+                            strings.appendAssumeCapacity(@intCast(u8, codepoint));
                         }
                     },
                     .failure => {
@@ -270,7 +209,7 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
                 }
             },
             '\n' => {
-                p.strings.appendAssumeCapacity('\n');
+                strings.appendAssumeCapacity('\n');
                 p.line += 1;
                 p.col = 1;
                 i += 1;
@@ -278,42 +217,43 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
             '"' => break,
             '{', '}' => try p.strArg(slice, &i, arg_mode),
             else => |c| {
-                p.strings.appendAssumeCapacity(c);
+                strings.appendAssumeCapacity(c);
                 p.col += 1;
                 i += 1;
             },
         }
     }
 
-    const ref = @intToEnum(Inst.Ref, p.insts.len);
-    try p.insts.append(p.gpa, .{
+    const ref = @intToEnum(Inst.Ref, p.ctx.code.insts.len);
+    try p.ctx.code.insts.append(p.gpa, .{
         .op = .str,
         .data = .{
             .lhs = @intToEnum(Inst.Ref, offset),
-            .rhs = @intToEnum(Inst.Ref, p.strings.items.len - offset),
+            .rhs = @intToEnum(Inst.Ref, strings.items.len - offset),
         },
     });
     return ref;
 }
 
 fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !void {
+    const strings = &p.ctx.code.strings;
     const c = slice[offset.*];
     if (c == slice[offset.* + 1]) {
-        p.strings.appendSliceAssumeCapacity("{{");
+        strings.appendSliceAssumeCapacity("{{");
         p.col += 2;
         offset.* += 2;
         return;
     }
     if (c == '}') {
         p.warn("unescaped '}}' in string", .{});
-        p.strings.appendSliceAssumeCapacity("{{");
+        strings.appendSliceAssumeCapacity("{{");
         p.col += 1;
         offset.* += 1;
         return;
     }
     if (slice[offset.* + 1] != '%') {
         p.warn("expected '%' after '{{'", .{});
-        p.strings.appendSliceAssumeCapacity("{{");
+        strings.appendSliceAssumeCapacity("{{");
         p.col += 1;
         offset.* += 1;
         return;
@@ -348,7 +288,7 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
         } else {
             gop.value_ptr.* = pos;
         }
-        p.strings.appendSliceAssumeCapacity("{}");
+        strings.appendSliceAssumeCapacity("{}");
         return;
     } else if (p.arg_names.size != invalid_args and
         !p.arg_names.contains(arg_name))
@@ -356,22 +296,22 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
         p.warn("use of undefined argument '%{s}'", .{arg_name});
 
         const undef = "[UNDEFINED ARGUMENT %";
-        try p.strings.ensureTotalCapacity(p.gpa, p.strings.capacity + undef.len);
+        try strings.ensureTotalCapacity(p.gpa, strings.capacity + undef.len);
 
-        p.strings.appendSliceAssumeCapacity(undef);
-        p.strings.appendSliceAssumeCapacity(arg_name);
-        p.strings.appendSliceAssumeCapacity("]");
+        strings.appendSliceAssumeCapacity(undef);
+        strings.appendSliceAssumeCapacity(arg_name);
+        strings.appendSliceAssumeCapacity("]");
         return;
     }
 
-    p.strings.appendAssumeCapacity('{');
+    strings.appendAssumeCapacity('{');
     if (p.arg_names.get(arg_name)) |pos| if (pos != .@"var") {
-        p.strings.appendAssumeCapacity(@enumToInt(pos));
-        p.strings.appendAssumeCapacity('}');
+        strings.appendAssumeCapacity(@enumToInt(pos));
+        strings.appendAssumeCapacity('}');
         return;
     };
-    p.strings.appendSliceAssumeCapacity(arg_name);
-    p.strings.appendAssumeCapacity('}');
+    strings.appendSliceAssumeCapacity(arg_name);
+    strings.appendAssumeCapacity('}');
 }
 
 fn arg(p: *Parser) !?[]const u8 {

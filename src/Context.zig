@@ -19,11 +19,16 @@ const Options = struct {
 const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
 const VarMap = std.StringHashMapUnmanaged(lib.Value);
 
-defs: lib.Definitions = .{},
+defs: std.StringHashMapUnmanaged(lib.Code.Program) = .{},
+code: lib.Code = .{},
 arena: ArenaAllocator,
 
 pub fn deinit(ctx: *Context) void {
-    ctx.defs.deinit(ctx.arena.child_allocator);
+    const gpa = ctx.arena.child_allocator;
+    var it = ctx.defs.keyIterator();
+    while (it.next()) |some| gpa.free(some.*);
+    ctx.defs.deinit(gpa);
+    ctx.code.deinit(gpa);
     ctx.arena.deinit();
     ctx.* = undefined;
 }
@@ -192,9 +197,9 @@ pub fn query(
 ) !?[]const u8 {
     _ = variables;
     _ = options;
-    const rule = ctx.defs.rules.get(key) orelse return null;
+    const rule = ctx.defs.get(key) orelse return null;
     // TODO execute rule
-    return ctx.defs.getExtra(.str, @intToEnum(lib.Definitions.Inst.Ref, ctx.defs.extra.items[rule]));
+    return ctx.code.getExtra(.str, @intToEnum(lib.Code.Inst.Ref, ctx.code.extra.items[rule.body]));
 }
 
 fn render(rule: []const u8, options: []const Options, variables: *const VarMap, writer: anytype) !void {
@@ -232,7 +237,9 @@ fn render(rule: []const u8, options: []const Options, variables: *const VarMap, 
         assert(rule[i] == '}');
         i += 1;
 
-        const val = if (name.len == 1 and name[0] < max_format_args)
+        const val = if (name.len == 0)
+            options[options_i].val
+        else if (name.len == 1 and name[0] < max_format_args)
             options[name[0]].val
         else
             variables.get(name) orelse {

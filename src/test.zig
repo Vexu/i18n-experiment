@@ -52,11 +52,10 @@ test "numbers in binary" {
 
 fn testFormat(input: [:0]const u8, comptime fmt: []const u8, args: anytype, expected: []const u8) !void {
     const a = std.testing.allocator;
-    var ctx = ctx: {
-        var defs = try lib.parse(a, input);
-        break :ctx lib.Context{ .defs = defs, .arena = std.heap.ArenaAllocator.init(a) };
-    };
+    var ctx = lib.Context{ .arena = std.heap.ArenaAllocator.init(a) };
     defer ctx.deinit();
+
+    try lib.parse(&ctx, input);
 
     var out_buf = std.ArrayList(u8).init(a);
     defer out_buf.deinit();
