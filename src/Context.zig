@@ -182,6 +182,15 @@ pub fn format(
         }
     }
 
+    if (!@import("builtin").is_test and @import("options").log_fmts) {
+        const S = struct {
+            fn logFmt(comptime a: anytype) void {
+                @compileLog(a);
+            }
+        };
+        S.logFmt(query_str[0..query_str.len].*);
+    }
+
     var vm = lib.Code.Vm{ .ctx = ctx, .args = options[0..options_i] };
     defer vm.deinit();
     const rule = (try query(&vm, query_str)) orelse query_str;
