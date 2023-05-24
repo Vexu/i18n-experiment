@@ -235,19 +235,24 @@ pub fn render(rule: []const u8, vm: *lib.Code.Vm, writer: anytype) !void {
         assert(rule[i] == '}');
         i += 1;
 
-        const val = if (name.len == 0)
-            vm.args[arg_i].val
+        const options = if (name.len == 0)
+            vm.args[arg_i]
         else if (name.len == 1 and name[0] < max_format_args)
-            vm.args[name[0]].val
+            vm.args[name[0]]
         else
-            vm.vars.get(name) orelse {
-                try writer.print("[UNDEFINED VARIABLE %{s}]", .{name});
-                continue;
+            Argument{
+                .fmt_options = .{},
+                .kind = .decimal,
+                .case = .lower,
+                .base = 10,
+                .val = vm.vars.get(name) orelse {
+                    try writer.print("[USE OF UNDEFINED VARIABLE %{s}]", .{name});
+                    continue;
+                },
             };
 
-        const options = vm.args[arg_i];
         arg_i += 1;
-        switch (val) {
+        switch (options.val) {
             .str, .preformatted => |str| try writer.writeAll(str),
             .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", options.fmt_options, writer),
             .int => |int| {

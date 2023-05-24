@@ -41,12 +41,12 @@ test "complex value" {
 test "numbers in binary" {
     try testFormat(
         \\def "{%dec} in binary is {%bin}"
-        \\    "{%dec} on binäärinä {%bin}"
+        \\    "binääri {%bin} on {%dec}"
         \\end
     ,
         "{[0]} in binary is {[0]b}",
         .{12},
-        "12 on binäärinä 1100",
+        "binääri 1100 on 12",
     );
 }
 
