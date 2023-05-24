@@ -10,13 +10,23 @@ const Inst = lib.Definitions.Inst;
 
 const Parser = @This();
 
+const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
+const ArgPos = enum(u8) {
+    @"var" = 0xFF,
+    _,
+
+    inline fn toInt(ap: ArgPos) u5 {
+        return @intCast(u5, @enumToInt(ap));
+    }
+};
+
 rules: std.StringHashMapUnmanaged(u32) = .{},
 insts: std.MultiArrayList(Inst) = .{},
 extra: std.ArrayListUnmanaged(u32) = .{},
 strings: std.ArrayListUnmanaged(u8) = .{},
 
 inst_buf: std.ArrayListUnmanaged(Inst.Ref) = .{},
-arg_names: std.StringHashMapUnmanaged(void) = .{},
+arg_names: std.StringHashMapUnmanaged(ArgPos) = .{},
 
 input: [:0]const u8,
 index: usize = 0,
@@ -66,16 +76,20 @@ fn addInst(p: *Parser, comptime op: Inst.Op, input: op.Data()) !Inst.Ref {
         .op = op,
         .data = switch (op) {
             .end => undefined,
-            .set => blk: {
+            .set_arg => .{
+                .lhs = @intToEnum(Inst.Ref, input.pos),
+                .rhs = input.operand,
+            },
+            .set_var => blk: {
                 const offset = p.strings.items.len;
-                try p.strings.appendSlice(p.gpa, input.arg);
+                try p.strings.appendSlice(p.gpa, input.@"var");
 
                 const extra_index = p.extra.items.len;
                 try p.extra.append(p.gpa, @intCast(u32, offset));
-                try p.extra.append(p.gpa, @intCast(u32, input.arg.len));
+                try p.extra.append(p.gpa, @intCast(u32, input.@"var".len));
                 break :blk .{
-                    .lhs = input.operand,
-                    .rhs = @intToEnum(Inst.Ref, extra_index),
+                    .lhs = @intToEnum(Inst.Ref, extra_index),
+                    .rhs = input.operand,
                 };
             },
             .@"if" => blk: {
@@ -87,7 +101,7 @@ fn addInst(p: *Parser, comptime op: Inst.Op, input: op.Data()) !Inst.Ref {
                     .rhs = @intToEnum(Inst.Ref, extra_index),
                 };
             },
-            .arg, .str => blk: {
+            .@"var", .str => blk: {
                 const offset = p.strings.items.len;
                 try p.strings.appendSlice(p.gpa, input);
                 break :blk .{
@@ -95,6 +109,7 @@ fn addInst(p: *Parser, comptime op: Inst.Op, input: op.Data()) !Inst.Ref {
                     .rhs = @intToEnum(Inst.Ref, input.len),
                 };
             },
+            .arg => .{ .lhs = @intToEnum(Inst.Ref, input), .rhs = undefined },
             .bool => .{ .lhs = @intToEnum(Inst.Ref, @boolToInt(input)), .rhs = undefined },
             .int => @bitCast(Inst.Data, input),
             .float => @bitCast(Inst.Data, input),
@@ -321,7 +336,20 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
     p.col += 1;
 
     if (arg_mode == .collect) {
-        try p.arg_names.put(p.gpa, arg_name, {});
+        if (p.arg_names.size >= max_format_args) {
+            p.warn("too many arguments, max {d}", .{max_format_args});
+            return;
+        }
+
+        const pos = @intToEnum(ArgPos, p.arg_names.size);
+        const gop = try p.arg_names.getOrPut(p.gpa, arg_name);
+        if (gop.found_existing) {
+            p.warn("redeclaration of argument '%{s}'", .{arg_name});
+        } else {
+            gop.value_ptr.* = pos;
+        }
+        p.strings.appendSliceAssumeCapacity("{}");
+        return;
     } else if (p.arg_names.size != invalid_args and
         !p.arg_names.contains(arg_name))
     {
@@ -336,12 +364,17 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
         return;
     }
 
-    p.strings.appendSliceAssumeCapacity("{%");
+    p.strings.appendAssumeCapacity('{');
+    if (p.arg_names.get(arg_name)) |pos| if (pos != .@"var") {
+        p.strings.appendAssumeCapacity(@enumToInt(pos));
+        p.strings.appendAssumeCapacity('}');
+        return;
+    };
     p.strings.appendSliceAssumeCapacity(arg_name);
     p.strings.appendAssumeCapacity('}');
 }
 
-fn arg(p: *Parser, arg_mode: ArgMode) !?[]const u8 {
+fn arg(p: *Parser) !?[]const u8 {
     if (p.input[p.index] != '%') return null;
     p.col += 1;
     p.index += 1;
@@ -358,35 +391,42 @@ fn arg(p: *Parser, arg_mode: ArgMode) !?[]const u8 {
         p.warn("expected argument name after '%'", .{});
         return null;
     }
-    const arg_name = p.input[start..p.index];
-    if (arg_mode == .collect) {
-        try p.arg_names.put(p.gpa, arg_name, {});
-    } else if (p.arg_names.size != invalid_args and
-        !p.arg_names.contains(arg_name))
-    {
-        p.warn("use of undefined argument '%{s}'", .{arg_name});
-        return null;
-    }
-    return arg_name;
+    return p.input[start..p.index];
 }
 
 fn stmt(p: *Parser) !bool {
     if (p.skip("set")) {
         p.skipWhitespace();
-        const dest = try p.arg(.collect);
+        const dest = try p.arg();
+        var pos: ArgPos = .@"var";
+        if (dest) |some| {
+            const gop = try p.arg_names.getOrPut(p.gpa, some);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = pos;
+            } else {
+                pos = gop.value_ptr.*;
+            }
+        } else {
+            p.warn("expected argument name after 'set'", .{});
+        }
         p.skipWhitespace();
         if (!p.skip("to")) {
             p.warn("expected 'to' after argument to set", .{});
         }
         p.skipWhitespace();
-        const val = try p.expr();
-        if (dest == null or val == null) {
+        const val = (try p.expr()) orelse {
+            p.warn("expected expression after 'to'", .{});
+            return false;
+        };
+        if (dest == null) {
             return false;
         }
-
-        const inst = try p.addInst(.set, .{
-            .arg = dest.?,
-            .operand = val.?,
+        const inst = if (pos == .@"var") try p.addInst(.set_var, .{
+            .@"var" = dest.?,
+            .operand = val,
+        }) else try p.addInst(.set_arg, .{
+            .pos = pos.toInt(),
+            .operand = val,
         });
         try p.inst_buf.append(p.gpa, inst);
         return true;
@@ -408,8 +448,19 @@ fn expr(p: *Parser) !?Inst.Ref {
         return try p.addInst(.bool, false);
     } else if (try p.str(.check)) |some| {
         return some;
-    } else if (try p.arg(.check)) |some| {
-        return try p.addInst(.arg, some);
+    } else if (try p.arg()) |arg_name| {
+        if (p.arg_names.size == invalid_args) {
+            return try p.addInst(.@"var", arg_name);
+        }
+        const pos = p.arg_names.get(arg_name) orelse {
+            p.warn("use of undefined argument '%{s}'", .{arg_name});
+            return null;
+        };
+        if (pos == .@"var") {
+            return try p.addInst(.@"var", arg_name);
+        } else {
+            return try p.addInst(.arg, pos.toInt());
+        }
     } else {
         // TODO numbers
         return null;

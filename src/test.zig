@@ -8,7 +8,7 @@ test "simple translation" {
         \\    "Moikka {%name}!"
         \\end
     ,
-        "Hello {s:%name}!",
+        "Hello {s}!",
         .{"Veikka"},
         "Moikka Veikka!",
     );
@@ -20,7 +20,7 @@ test "use of undefined argument" {
         \\    "Heippa {%foo}!"
         \\end
     ,
-        "Bye {s:%name}!",
+        "Bye {s}!",
         .{"Veikka"},
         "Heippa [UNDEFINED ARGUMENT %foo]!",
     );
@@ -40,8 +40,8 @@ test "complex value" {
 
 test "numbers in binary" {
     try testFormat(
-        \\def "{%0} in binary is {%0}"
-        \\    "{%0} on binäärinä {%0}"
+        \\def "{%dec} in binary is {%bin}"
+        \\    "{%dec} on binäärinä {%bin}"
         \\end
     ,
         "{[0]} in binary is {[0]b}",

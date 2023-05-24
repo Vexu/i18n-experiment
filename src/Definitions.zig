@@ -25,9 +25,11 @@ pub const Inst = struct {
 
     pub const Op = enum(u8) {
         end,
-        set,
+        set_arg,
+        set_var,
         @"if",
         arg,
+        @"var",
         str,
         bool,
         int,
@@ -46,9 +48,11 @@ pub const Inst = struct {
         pub fn Data(comptime op: Op) type {
             return switch (op) {
                 .end => void,
-                .set => Set,
+                .arg => u5,
+                .set_arg => SetArg,
+                .set_var => SetVar,
                 .@"if" => If,
-                .arg, .str => []const u8,
+                .@"var", .str => []const u8,
                 .bool => bool,
                 .int => u64,
                 .float => f64,
@@ -59,8 +63,13 @@ pub const Inst = struct {
     };
     pub const Data = Bin;
 
-    pub const Set = struct {
-        arg: []const u8,
+    pub const SetVar = struct {
+        @"var": []const u8,
+        operand: Inst.Ref,
+    };
+
+    pub const SetArg = struct {
+        pos: u5,
         operand: Inst.Ref,
     };
 
@@ -82,24 +91,29 @@ pub fn getExtra(defs: *Definitions, comptime op: Inst.Op, ref: Inst.Ref) op.Data
     const data = defs.insts.items(.data)[@enumToInt(ref)];
     switch (op) {
         .end => {},
-        .set => {
-            const offset = defs.extra.items[data.rhs];
-            const len = defs.extra.items[data.rhs + 1];
+        .set_var => {
+            const offset = defs.extra.items[data.lhs];
+            const len = defs.extra.items[data.lhs + 1];
             return .{
-                .arg = defs.strings.items[offset..][0..len],
-                .operand = data.lhs,
+                .@"var" = defs.strings.items[offset..][0..len],
+                .operand = data.rhs,
             };
+        },
+        .set_arg => return .{
+            .pos = @intCast(u5, data.lhs),
+            .operand = data.rhs,
         },
         .@"if" => return .{
             .then_body = defs.extra.items[data.rhs],
             .else_body = defs.extra.items[data.rhs + 1],
             .cond = data.lhs,
         },
-        .arg, .str => {
+        .@"var", .str => {
             const offset = @enumToInt(data.lhs);
             const len = @enumToInt(data.rhs);
             return defs.strings.items[offset..][0..len];
         },
+        .arg => return @intCast(u5, data.lhs),
         .bool => return data.lhs != 0,
         .int => return @bitCast(u64, data),
         .float => return @bitCast(f64, data),

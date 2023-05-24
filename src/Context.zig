@@ -10,19 +10,19 @@ const lib = @import("lib.zig");
 const Context = @This();
 
 const Options = struct {
+    val: lib.Value,
     fmt_options: std.fmt.FormatOptions,
     kind: enum { decimal, scientific, hex },
     case: std.fmt.Case,
     base: u8,
 };
 const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
+const VarMap = std.StringHashMapUnmanaged(lib.Value);
 
 defs: lib.Definitions = .{},
-vals: std.StringHashMapUnmanaged(lib.Value) = .{},
 arena: ArenaAllocator,
 
 pub fn deinit(ctx: *Context) void {
-    ctx.vals.deinit(ctx.arena.child_allocator);
     ctx.defs.deinit(ctx.arena.child_allocator);
     ctx.arena.deinit();
     ctx.* = undefined;
@@ -45,9 +45,7 @@ pub fn format(
         @compileError("32 arguments max are supported per format call");
     }
 
-    ctx.vals.clearRetainingCapacity();
     _ = ctx.arena.reset(.{ .retain_with_limit = 4069 });
-    try ctx.vals.ensureTotalCapacity(ctx.arena.child_allocator, max_format_args);
     var options: [max_format_args]Options = undefined;
 
     @setEvalBranchQuota(2000000);
@@ -97,19 +95,8 @@ pub fn format(
 
         const fmt_begin = i;
         // Find the closing brace
-        inline while (i < fmt.len and fmt[i] != '}' and fmt[i] != '%') : (i += 1) {}
+        inline while (i < fmt.len and fmt[i] != '}') : (i += 1) {}
         const fmt_end = i;
-        if (fmt[i] == '%') {
-            i += 1;
-        }
-        inline while (i < fmt.len) : (i += 1) {
-            switch (fmt[i]) {
-                '0'...'9', 'a'...'z', 'A'...'Z' => {},
-                '}' => break,
-                else => @compileError("invalid character in argument name"),
-            }
-        }
-        const key_end = i;
 
         if (i >= fmt.len) {
             @compileError("missing closing }");
@@ -120,6 +107,13 @@ pub fn format(
         i += 1;
 
         comptime var placeholder = std.fmt.Placeholder.parse(fmt[fmt_begin..fmt_end].*);
+        const arg_pos = comptime switch (placeholder.arg) {
+            .none => null,
+            .number => |pos| pos,
+            .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
+                @compileError("no argument with name '" ++ arg_name ++ "'"),
+        };
+
         const width = comptime switch (placeholder.width) {
             .none => null,
             .number => |v| v,
@@ -141,20 +135,11 @@ pub fn format(
                 break :blk @field(args, arg_name);
             },
         };
-        const arg_pos = comptime arg_state.nextArg(switch (placeholder.arg) {
-            .none => null,
-            .number => |pos| pos,
-            .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
-                @compileError("no argument with name '" ++ arg_name ++ "'"),
-        }) orelse @compileError("too few arguments");
-        const arg_name = comptime if (fmt_end != key_end) blk: {
-            if (placeholder.arg != .none) @compileError("cannot specify argument name and argument specifier");
-            break :blk fmt[fmt_end + 1 .. key_end];
-        } else switch (placeholder.arg) {
-            .named => |arg_name| arg_name,
-            else => std.fmt.comptimePrint("{d}", .{arg_pos}),
-        };
-        query_str = query_str ++ "{%" ++ arg_name ++ "}";
+
+        const arg_to_print = comptime arg_state.nextArg(arg_pos) orelse
+            @compileError("too few arguments");
+
+        query_str = query_str ++ "{}";
         const fmt_options = std.fmt.FormatOptions{
             .fill = placeholder.fill,
             .alignment = placeholder.alignment,
@@ -162,14 +147,11 @@ pub fn format(
             .precision = precision,
         };
         const spec = placeholder.specifier_arg;
-        ctx.vals.putAssumeCapacity(
-            arg_name,
-            try lib.Value.from(&ctx.arena, @field(args, fields_info[arg_pos].name), spec, fmt_options),
-        );
-        options[options_i] = comptime .{
+        options[options_i] = .{
+            .val = try lib.Value.from(&ctx.arena, @field(args, fields_info[arg_to_print].name), spec, fmt_options),
             .fmt_options = fmt_options,
-            .case = if (std.mem.eql(u8, spec, "X")) .upper else .lower,
-            .base = if (std.mem.eql(u8, spec, "b"))
+            .case = comptime if (std.mem.eql(u8, spec, "X")) .upper else .lower,
+            .base = comptime if (std.mem.eql(u8, spec, "b"))
                 2
             else if (std.mem.eql(u8, spec, "o"))
                 8
@@ -177,7 +159,7 @@ pub fn format(
                 16
             else
                 10,
-            .kind = if (std.mem.eql(u8, spec, "d"))
+            .kind = comptime if (std.mem.eql(u8, spec, "d"))
                 .decimal
             else if (std.mem.eql(u8, spec, "x"))
                 .hex
@@ -196,17 +178,26 @@ pub fn format(
         }
     }
 
-    const rule = (try ctx.query(query_str)) orelse query_str;
-    try ctx.render(rule, &options, writer);
+    var variables = std.StringHashMapUnmanaged(lib.Value){};
+    defer variables.deinit(ctx.arena.child_allocator);
+    const rule = (try ctx.query(query_str, options[0..options_i], &variables)) orelse query_str;
+    try render(rule, options[0..options_i], &variables, writer);
 }
 
-pub fn query(ctx: *Context, key: []const u8) !?[]const u8 {
+pub fn query(
+    ctx: *Context,
+    key: []const u8,
+    options: []Options,
+    variables: *VarMap,
+) !?[]const u8 {
+    _ = variables;
+    _ = options;
     const rule = ctx.defs.rules.get(key) orelse return null;
     // TODO execute rule
     return ctx.defs.getExtra(.str, @intToEnum(lib.Definitions.Inst.Ref, ctx.defs.extra.items[rule]));
 }
 
-fn render(ctx: *Context, rule: []const u8, options: *[max_format_args]Options, writer: anytype) !void {
+fn render(rule: []const u8, options: []const Options, variables: *const VarMap, writer: anytype) !void {
     var i: usize = 0;
     var options_i: u8 = 0;
     while (i < rule.len) {
@@ -233,8 +224,7 @@ fn render(ctx: *Context, rule: []const u8, options: *[max_format_args]Options, w
 
         // The parser validates these.
         assert(rule[i] == '{');
-        assert(rule[i + 1] == '%');
-        i += 2;
+        i += 1;
 
         const name_start = i;
         while (rule[i] != '}') : (i += 1) {}
@@ -242,7 +232,14 @@ fn render(ctx: *Context, rule: []const u8, options: *[max_format_args]Options, w
         assert(rule[i] == '}');
         i += 1;
 
-        const val = ctx.vals.get(name).?;
+        const val = if (name.len == 1 and name[0] < max_format_args)
+            options[name[0]].val
+        else
+            variables.get(name) orelse {
+                try writer.print("[UNDEFINED VARIABLE %{s}]", .{name});
+                continue;
+            };
+
         const opts = options[options_i];
         options_i += 1;
         switch (val) {
