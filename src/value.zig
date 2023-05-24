@@ -7,6 +7,7 @@ pub const Value = union(enum) {
     float: f64,
     str: []const u8,
     preformatted: []const u8,
+    none,
 
     pub fn from(
         arena: *std.heap.ArenaAllocator,

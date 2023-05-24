@@ -9,7 +9,7 @@ const lib = @import("lib.zig");
 
 const Context = @This();
 
-const Options = struct {
+pub const Argument = struct {
     val: lib.Value,
     fmt_options: std.fmt.FormatOptions,
     kind: enum { decimal, scientific, hex },
@@ -17,7 +17,6 @@ const Options = struct {
     base: u8,
 };
 const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
-const VarMap = std.StringHashMapUnmanaged(lib.Value);
 
 defs: std.StringHashMapUnmanaged(lib.Code.Program) = .{},
 code: lib.Code = .{},
@@ -51,7 +50,7 @@ pub fn format(
     }
 
     _ = ctx.arena.reset(.{ .retain_with_limit = 4069 });
-    var options: [max_format_args]Options = undefined;
+    var options: [max_format_args]Argument = undefined;
 
     @setEvalBranchQuota(2000000);
     comptime var arg_state: std.fmt.ArgState = .{ .args_len = fields_info.len };
@@ -183,28 +182,27 @@ pub fn format(
         }
     }
 
-    var variables = std.StringHashMapUnmanaged(lib.Value){};
-    defer variables.deinit(ctx.arena.child_allocator);
-    const rule = (try ctx.query(query_str, options[0..options_i], &variables)) orelse query_str;
-    try render(rule, options[0..options_i], &variables, writer);
+    var vm = lib.Code.Vm{ .ctx = ctx, .args = options[0..options_i] };
+    defer vm.deinit();
+    const rule = (try query(&vm, query_str)) orelse query_str;
+    try render(rule, &vm, writer);
 }
 
-pub fn query(
-    ctx: *Context,
-    key: []const u8,
-    options: []Options,
-    variables: *VarMap,
-) !?[]const u8 {
-    _ = variables;
-    _ = options;
-    const rule = ctx.defs.get(key) orelse return null;
-    // TODO execute rule
-    return ctx.code.getExtra(.str, @intToEnum(lib.Code.Inst.Ref, ctx.code.extra.items[rule.body]));
+pub fn query(vm: *lib.Code.Vm, key: []const u8) !?[]const u8 {
+    const program = vm.ctx.defs.get(key) orelse return null;
+    const res = try vm.run(program);
+    switch (res) {
+        .str => |str| return str,
+        else => {
+            log.err("definition for '{s}' did not result in a format string", .{key});
+            return null;
+        },
+    }
 }
 
-fn render(rule: []const u8, options: []const Options, variables: *const VarMap, writer: anytype) !void {
+pub fn render(rule: []const u8, vm: *lib.Code.Vm, writer: anytype) !void {
     var i: usize = 0;
-    var options_i: u8 = 0;
+    var arg_i: u8 = 0;
     while (i < rule.len) {
         const start_index = i;
         while (i < rule.len) : (i += 1) {
@@ -238,30 +236,31 @@ fn render(rule: []const u8, options: []const Options, variables: *const VarMap, 
         i += 1;
 
         const val = if (name.len == 0)
-            options[options_i].val
+            vm.args[arg_i].val
         else if (name.len == 1 and name[0] < max_format_args)
-            options[name[0]].val
+            vm.args[name[0]].val
         else
-            variables.get(name) orelse {
+            vm.vars.get(name) orelse {
                 try writer.print("[UNDEFINED VARIABLE %{s}]", .{name});
                 continue;
             };
 
-        const opts = options[options_i];
-        options_i += 1;
+        const options = vm.args[arg_i];
+        arg_i += 1;
         switch (val) {
             .str, .preformatted => |str| try writer.writeAll(str),
-            .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", opts.fmt_options, writer),
+            .bool => |b| try std.fmt.formatBuf(if (b) "true" else "false", options.fmt_options, writer),
             .int => |int| {
-                try std.fmt.formatInt(int, opts.base, opts.case, opts.fmt_options, writer);
+                try std.fmt.formatInt(int, options.base, options.case, options.fmt_options, writer);
             },
             .float => |float| {
-                switch (opts.kind) {
-                    .decimal => try std.fmt.formatFloatDecimal(float, opts.fmt_options, writer),
-                    .hex => try std.fmt.formatFloatHexadecimal(float, opts.fmt_options, writer),
-                    .scientific => try std.fmt.formatFloatScientific(float, opts.fmt_options, writer),
+                switch (options.kind) {
+                    .decimal => try std.fmt.formatFloatDecimal(float, options.fmt_options, writer),
+                    .hex => try std.fmt.formatFloatHexadecimal(float, options.fmt_options, writer),
+                    .scientific => try std.fmt.formatFloatScientific(float, options.fmt_options, writer),
                 }
             },
+            .none => unreachable,
         }
     }
 }

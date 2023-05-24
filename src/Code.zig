@@ -1,12 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const expect = std.testing.expect;
+const lib = @import("lib.zig");
 
 const Code = @This();
 
-pub const Program = struct {
-    body: u32,
-};
+pub const Program = struct { body: u32 };
 
 pub const Inst = struct {
     op: Op,
@@ -74,6 +73,36 @@ pub const Inst = struct {
     };
 
     pub const Ref = enum(u32) { _ };
+};
+
+pub const Vm = struct {
+    ctx: *lib.Context,
+    args: []lib.Context.Argument,
+    vars: std.StringHashMapUnmanaged(lib.Value) = .{},
+
+    pub fn deinit(vm: *Vm) void {
+        vm.vars.deinit(vm.ctx.arena.child_allocator);
+        vm.* = undefined;
+    }
+
+    pub fn run(vm: *Vm, program: Program) !lib.Value {
+        const body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[program.body..]);
+        return vm.evalBody(body);
+    }
+
+    fn evalBody(vm: *Vm, body: []Inst.Ref) !lib.Value {
+        var i: usize = 0;
+        const ops = vm.ctx.code.insts.items(.op);
+        while (true) {
+            const inst = body[i];
+            i += 1;
+            switch (ops[@enumToInt(inst)]) {
+                .str => return .{ .str = vm.ctx.code.getExtra(.str, inst) },
+                .end => return .none,
+                else => unreachable,
+            }
+        }
+    }
 };
 
 insts: std.MultiArrayList(Inst) = .{},
