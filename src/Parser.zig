@@ -9,7 +9,6 @@ const Inst = lib.Code.Inst;
 
 const Parser = @This();
 
-const invalid_args = std.math.maxInt(u32);
 const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
 const ArgPos = enum(u8) {
     @"var" = 0xFF,
@@ -98,13 +97,13 @@ fn word(p: *Parser, s: []const u8) bool {
     }
     p.index += s.len;
     p.col += s.len;
+    p.skipWhitespace();
     return true;
 }
 
 fn def(p: *Parser) !bool {
     if (!p.word("def")) return false;
 
-    p.skipWhitespace();
     const strings = &p.ctx.code.strings;
     const start_len = strings.items.len;
     var opt_def_name = try p.str(.collect);
@@ -124,12 +123,12 @@ fn def(p: *Parser) !bool {
         if (gop.found_existing) {
             p.warn("ignoring duplicate definition for '{s}'", .{name_str});
             opt_def_name = null;
+            p.gpa.free(name_str);
         }
     } else {
         p.warn("ignoring unnamed definition", .{});
     }
-    if (opt_def_name == null) p.arg_names.size = invalid_args;
-    errdefer if (opt_def_name) |_| assert(p.ctx.defs.remove(gop.key_ptr.*));
+    errdefer if (opt_def_name) |_| p.ctx.defs.removeByPtr(gop.key_ptr);
 
     p.inst_buf.items.len = 0;
     var warned = false;
@@ -294,9 +293,7 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
         }
         strings.appendSliceAssumeCapacity("{}");
         return;
-    } else if (p.arg_names.size != invalid_args and
-        !p.arg_names.contains(arg_name))
-    {
+    } else if (!p.arg_names.contains(arg_name)) {
         p.warn("use of undefined argument '%{s}'", .{arg_name});
 
         const undef = "[UNDEFINED ARGUMENT %";
@@ -340,7 +337,6 @@ fn arg(p: *Parser) !?[]const u8 {
 
 fn stmt(p: *Parser) !bool {
     if (p.word("set")) {
-        p.skipWhitespace();
         const dest = try p.arg();
         var pos: ArgPos = .@"var";
         if (dest) |some| {
@@ -357,7 +353,6 @@ fn stmt(p: *Parser) !bool {
         if (!p.word("to")) {
             p.warn("expected 'to' after argument to set", .{});
         }
-        p.skipWhitespace();
         const val = (try p.expr()) orelse {
             p.warn("expected expression after 'to'", .{});
             return false;
@@ -385,7 +380,6 @@ fn stmt(p: *Parser) !bool {
 }
 
 fn ifBody(p: *Parser) !bool {
-    p.skipWhitespace();
     const cond = (try p.expr()) orelse {
         p.warn("expected if condition", .{});
         return false;
@@ -403,13 +397,11 @@ fn ifBody(p: *Parser) !bool {
         }
         if (p.word("end")) break;
         if (p.word("elseif")) {
-            p.skipWhitespace();
             then_body = try p.finishBody(start);
             _ = try p.ifBody();
             break;
         }
         if (p.word("else")) {
-            p.skipWhitespace();
             if (then_body != null) {
                 p.warn("ignoring duplicate 'else'", .{});
                 continue;
@@ -451,9 +443,6 @@ fn expr(p: *Parser) !?Inst.Ref {
     } else if (try p.str(.check)) |some| {
         return some;
     } else if (try p.arg()) |arg_name| {
-        if (p.arg_names.size == invalid_args) {
-            return try p.addInst(.@"var", arg_name);
-        }
         const pos = p.arg_names.get(arg_name) orelse {
             p.warn("use of undefined argument '%{s}'", .{arg_name});
             return null;
