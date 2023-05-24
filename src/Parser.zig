@@ -89,16 +89,20 @@ fn warn(p: Parser, comptime fmt: []const u8, args: anytype) void {
     log.warn(fmt ++ " at line {d}, column {d}", args ++ .{ p.line, p.col });
 }
 
-fn skip(p: *Parser, s: []const u8) bool {
+fn word(p: *Parser, s: []const u8) bool {
     if (!mem.startsWith(u8, p.input[p.index..], s))
         return false;
+    switch (p.input[p.index + s.len]) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_' => return false,
+        else => {},
+    }
     p.index += s.len;
     p.col += s.len;
     return true;
 }
 
 fn def(p: *Parser) !bool {
-    if (!p.skip("def")) return false;
+    if (!p.word("def")) return false;
 
     p.skipWhitespace();
     const strings = &p.ctx.code.strings;
@@ -135,7 +139,7 @@ fn def(p: *Parser) !bool {
             p.warn("unexpected EOF inside definition", .{});
             break;
         }
-        if (p.skip("end")) break;
+        if (p.word("end")) break;
         if (try p.stmt()) continue;
         if (!warned) {
             warned = true;
@@ -335,7 +339,7 @@ fn arg(p: *Parser) !?[]const u8 {
 }
 
 fn stmt(p: *Parser) !bool {
-    if (p.skip("set")) {
+    if (p.word("set")) {
         p.skipWhitespace();
         const dest = try p.arg();
         var pos: ArgPos = .@"var";
@@ -350,7 +354,7 @@ fn stmt(p: *Parser) !bool {
             p.warn("expected argument name after 'set'", .{});
         }
         p.skipWhitespace();
-        if (!p.skip("to")) {
+        if (!p.word("to")) {
             p.warn("expected 'to' after argument to set", .{});
         }
         p.skipWhitespace();
@@ -370,9 +374,8 @@ fn stmt(p: *Parser) !bool {
         });
         try p.inst_buf.append(p.gpa, inst);
         return true;
-    } else if (p.skip("if")) {
-        // TODO
-        return true;
+    } else if (p.word("if")) {
+        return p.ifBody();
     } else if (try p.str(.check)) |inst| {
         try p.inst_buf.append(p.gpa, inst);
         return true;
@@ -381,10 +384,69 @@ fn stmt(p: *Parser) !bool {
     }
 }
 
+fn ifBody(p: *Parser) !bool {
+    p.skipWhitespace();
+    const cond = (try p.expr()) orelse {
+        p.warn("expected if condition", .{});
+        return false;
+    };
+    var start = p.inst_buf.items.len;
+    defer p.inst_buf.items.len = start;
+
+    var warned = false;
+    var then_body: ?u32 = null;
+    while (true) {
+        p.skipWhitespace();
+        if (p.input[p.index] == 0 and p.index == p.input.len) {
+            p.warn("unexpected EOF inside 'if'", .{});
+            break;
+        }
+        if (p.word("end")) break;
+        if (p.word("elseif")) {
+            p.skipWhitespace();
+            then_body = try p.finishBody(start);
+            _ = try p.ifBody();
+            break;
+        }
+        if (p.word("else")) {
+            p.skipWhitespace();
+            if (then_body != null) {
+                p.warn("ignoring duplicate 'else'", .{});
+                continue;
+            }
+            then_body = try p.finishBody(start);
+        }
+        if (try p.stmt()) continue;
+        if (!warned) {
+            warned = true;
+            p.warn("ignoring unexpected statement", .{});
+        }
+        p.col += 1;
+        p.index += 1;
+    }
+    const else_body = try p.finishBody(start);
+    const @"if" = try p.addInst(.@"if", .{
+        .cond = cond,
+        .then_body = then_body orelse else_body,
+        .else_body = if (then_body != null) else_body else 0,
+    });
+    try p.inst_buf.append(p.gpa, @"if");
+    start += 1;
+    return true;
+}
+
+fn finishBody(p: *Parser, start: usize) !u32 {
+    const index = @intCast(u32, p.ctx.code.extra.items.len);
+    try p.inst_buf.append(p.gpa, try p.addInst(.end, {}));
+    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast([]const u32, p.inst_buf.items[start..]));
+    p.inst_buf.items.len = start;
+    return index;
+}
+
 fn expr(p: *Parser) !?Inst.Ref {
-    if (p.skip("true")) {
+    if (p.word("true")) {
         return try p.addInst(.bool, true);
-    } else if (p.skip("false")) {
+    } else if (p.word("false")) {
         return try p.addInst(.bool, false);
     } else if (try p.str(.check)) |some| {
         return some;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const expect = std.testing.expect;
+const log = std.log.scoped(.i18n);
 const lib = @import("lib.zig");
 
 const Code = @This();
@@ -62,7 +63,7 @@ pub const Inst = struct {
     };
 
     pub const If = struct {
-        cond: Inst,
+        cond: Inst.Ref,
         then_body: u32,
         else_body: u32,
     };
@@ -107,6 +108,28 @@ pub const Vm = struct {
                     const val = try vm.evalExpr(set.operand);
                     vm.args[set.pos].val = val;
                 },
+                .@"if" => {
+                    const @"if" = vm.ctx.code.getExtra(.@"if", inst);
+                    const cond = try vm.evalExpr(@"if".cond);
+                    const cond_bool = switch (cond) {
+                        .bool => |b| b,
+                        .int => |int| int != 0,
+                        .float => |float| float != 0,
+                        else => {
+                            log.warn("ignoring 'if' with non-boolean condition", .{});
+                            continue;
+                        },
+                    };
+                    const then_body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[@"if".then_body..]);
+                    const else_body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[@"if".else_body..]);
+                    const body_res = if (cond_bool)
+                        try vm.evalBody(then_body)
+                    else if (@"if".else_body != 0)
+                        try vm.evalBody(else_body)
+                    else
+                        .none;
+                    if (body_res == .str) return body_res;
+                },
                 .str => return .{ .str = vm.ctx.code.getExtra(.str, inst) },
                 .end => return .none,
                 else => unreachable,
@@ -120,6 +143,7 @@ pub const Vm = struct {
             .bool => return .{ .bool = vm.ctx.code.getExtra(.bool, inst) },
             .int => return .{ .int = vm.ctx.code.getExtra(.int, inst) },
             .float => return .{ .float = vm.ctx.code.getExtra(.float, inst) },
+            .arg => return vm.args[vm.ctx.code.getExtra(.arg, inst)].val,
             .set_arg, .set_var, .@"if", .end => unreachable,
             else => |op| std.debug.panic("TODO eval {}", .{op}),
         }
@@ -167,7 +191,7 @@ pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
             const len = @enumToInt(data.rhs);
             return c.strings.items[offset..][0..len];
         },
-        .arg => return @intCast(u5, data.lhs),
+        .arg => return @intCast(u5, @enumToInt(data.lhs)),
         .bool => return @enumToInt(data.lhs) != 0,
         .int => return @bitCast(i64, data),
         .float => return @bitCast(f64, data),
