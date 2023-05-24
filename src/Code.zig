@@ -42,7 +42,7 @@ pub const Inst = struct {
                 .@"if" => If,
                 .@"var", .str => []const u8,
                 .bool => bool,
-                .int => u64,
+                .int => i64,
                 .float => f64,
                 .not => Ref,
                 else => Bin,
@@ -67,7 +67,7 @@ pub const Inst = struct {
         else_body: u32,
     };
 
-    pub const Bin = struct {
+    pub const Bin = extern struct {
         lhs: Inst.Ref,
         rhs: Inst.Ref,
     };
@@ -97,10 +97,31 @@ pub const Vm = struct {
             const inst = body[i];
             i += 1;
             switch (ops[@enumToInt(inst)]) {
+                .set_var => {
+                    const set = vm.ctx.code.getExtra(.set_var, inst);
+                    const val = try vm.evalExpr(set.operand);
+                    try vm.vars.put(vm.ctx.arena.child_allocator, set.@"var", val);
+                },
+                .set_arg => {
+                    const set = vm.ctx.code.getExtra(.set_arg, inst);
+                    const val = try vm.evalExpr(set.operand);
+                    vm.args[set.pos].val = val;
+                },
                 .str => return .{ .str = vm.ctx.code.getExtra(.str, inst) },
                 .end => return .none,
                 else => unreachable,
             }
+        }
+    }
+
+    fn evalExpr(vm: *Vm, inst: Inst.Ref) !lib.Value {
+        const ops = vm.ctx.code.insts.items(.op);
+        switch (ops[@enumToInt(inst)]) {
+            .bool => return .{ .bool = vm.ctx.code.getExtra(.bool, inst) },
+            .int => return .{ .int = vm.ctx.code.getExtra(.int, inst) },
+            .float => return .{ .float = vm.ctx.code.getExtra(.float, inst) },
+            .set_arg, .set_var, .@"if", .end => unreachable,
+            else => |op| std.debug.panic("TODO eval {}", .{op}),
         }
     }
 };
@@ -121,21 +142,25 @@ pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
     switch (op) {
         .end => {},
         .set_var => {
-            const offset = c.extra.items[data.lhs];
-            const len = c.extra.items[data.lhs + 1];
+            const extra_index = @enumToInt(data.lhs);
+            const offset = c.extra.items[extra_index];
+            const len = c.extra.items[extra_index + 1];
             return .{
                 .@"var" = c.strings.items[offset..][0..len],
                 .operand = data.rhs,
             };
         },
         .set_arg => return .{
-            .pos = @intCast(u5, data.lhs),
+            .pos = @intCast(u5, @enumToInt(data.lhs)),
             .operand = data.rhs,
         },
-        .@"if" => return .{
-            .then_body = c.extra.items[data.rhs],
-            .else_body = c.extra.items[data.rhs + 1],
-            .cond = data.lhs,
+        .@"if" => {
+            const extra_index = @enumToInt(data.rhs);
+            return .{
+                .then_body = c.extra.items[extra_index],
+                .else_body = c.extra.items[extra_index + 1],
+                .cond = data.lhs,
+            };
         },
         .@"var", .str => {
             const offset = @enumToInt(data.lhs);
@@ -143,8 +168,8 @@ pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
             return c.strings.items[offset..][0..len];
         },
         .arg => return @intCast(u5, data.lhs),
-        .bool => return data.lhs != 0,
-        .int => return @bitCast(u64, data),
+        .bool => return @enumToInt(data.lhs) != 0,
+        .int => return @bitCast(i64, data),
         .float => return @bitCast(f64, data),
         .not => return data.lhs,
         else => return data,

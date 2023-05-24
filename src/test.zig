@@ -50,6 +50,32 @@ test "numbers in binary" {
     );
 }
 
+test "set argument" {
+    try testFormat(
+        \\def "this is {%bool}"
+        \\    set %bool to false
+        \\    "this is {%bool}"
+        \\end
+    ,
+        "this is {}",
+        .{true},
+        "this is false",
+    );
+}
+
+test "set variable" {
+    try testFormat(
+        \\def "no arguments here"
+        \\    set %my_var to true
+        \\    "but my var is {%my_var}"
+        \\end
+    ,
+        "no arguments here",
+        .{},
+        "but my var is true",
+    );
+}
+
 fn testFormat(input: [:0]const u8, comptime fmt: []const u8, args: anytype, expected: []const u8) !void {
     const a = std.testing.allocator;
     var ctx = lib.Context{ .arena = std.heap.ArenaAllocator.init(a) };

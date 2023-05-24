@@ -261,7 +261,7 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
     offset.* += 2;
     const start = offset.*;
     while (true) switch (slice[offset.*]) {
-        '0'...'9', 'a'...'z', 'A'...'Z' => {
+        '0'...'9', 'a'...'z', 'A'...'Z', '_' => {
             offset.* += 1;
             p.col += 1;
         },
@@ -321,7 +321,7 @@ fn arg(p: *Parser) !?[]const u8 {
 
     const start = p.index;
     while (true) switch (p.input[p.index]) {
-        '0'...'9', 'a'...'z', 'A'...'Z' => {
+        '0'...'9', 'a'...'z', 'A'...'Z', '_' => {
             p.col += 1;
             p.index += 1;
         },
