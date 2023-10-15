@@ -15,7 +15,7 @@ const ArgPos = enum(u8) {
     _,
 
     inline fn toInt(ap: ArgPos) u5 {
-        return @intCast(u5, @enumToInt(ap));
+        return @intCast(@intFromEnum(ap));
     }
 };
 
@@ -111,9 +111,9 @@ fn def(p: *Parser) !bool {
     if (opt_def_name) |def_name| {
         // TODO handle this better
         const name_str = blk: {
-            const data = p.ctx.code.insts.items(.data)[@enumToInt(def_name)];
-            const offset = @enumToInt(data.lhs);
-            const len = @enumToInt(data.rhs);
+            const data = p.ctx.code.insts.items(.data)[@intFromEnum(def_name)];
+            const offset = @intFromEnum(data.lhs);
+            const len = @intFromEnum(data.rhs);
             const name_str = strings.items[offset..][0..len];
             break :blk try p.gpa.dupe(u8, name_str);
         };
@@ -151,8 +151,8 @@ fn def(p: *Parser) !bool {
 
     const end_inst = try p.addInst(.end, {});
     try p.inst_buf.append(p.gpa, end_inst);
-    const body = @intCast(u32, p.ctx.code.extra.items.len);
-    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast([]u32, p.inst_buf.items));
+    const body: u32 = @intCast(p.ctx.code.extra.items.len);
+    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast(p.inst_buf.items));
     gop.value_ptr.* = .{ .body = body };
     return true;
 }
@@ -202,7 +202,7 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
                             };
                             strings.appendSliceAssumeCapacity(buf[0..len]);
                         } else {
-                            strings.appendAssumeCapacity(@intCast(u8, codepoint));
+                            strings.appendAssumeCapacity(@intCast(codepoint));
                         }
                     },
                     .failure => {
@@ -227,12 +227,12 @@ fn str(p: *Parser, arg_mode: ArgMode) !?Inst.Ref {
         }
     }
 
-    const ref = @intToEnum(Inst.Ref, p.ctx.code.insts.len);
+    const ref: Inst.Ref = @enumFromInt(p.ctx.code.insts.len);
     try p.ctx.code.insts.append(p.gpa, .{
         .op = .str,
         .data = .{
-            .lhs = @intToEnum(Inst.Ref, offset),
-            .rhs = @intToEnum(Inst.Ref, strings.items.len - offset),
+            .lhs = @enumFromInt(offset),
+            .rhs = @enumFromInt(strings.items.len - offset),
         },
     });
     return ref;
@@ -284,7 +284,7 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
             return;
         }
 
-        const pos = @intToEnum(ArgPos, p.arg_names.size);
+        const pos: ArgPos = @enumFromInt(p.arg_names.size);
         const gop = try p.arg_names.getOrPut(p.gpa, arg_name);
         if (gop.found_existing) {
             p.warn("redeclaration of argument '%{s}'", .{arg_name});
@@ -307,7 +307,7 @@ fn strArg(p: *Parser, slice: []const u8, offset: *usize, arg_mode: ArgMode) !voi
 
     strings.appendAssumeCapacity('{');
     if (p.arg_names.get(arg_name)) |pos| if (pos != .@"var") {
-        strings.appendAssumeCapacity(@enumToInt(pos));
+        strings.appendAssumeCapacity(@intFromEnum(pos));
         strings.appendAssumeCapacity('}');
         return;
     };
@@ -335,7 +335,7 @@ fn arg(p: *Parser) !?[]const u8 {
     return p.input[start..p.index];
 }
 
-fn stmt(p: *Parser) !bool {
+fn stmt(p: *Parser) Allocator.Error!bool {
     if (p.word("set")) {
         const dest = try p.arg();
         var pos: ArgPos = .@"var";
@@ -428,9 +428,9 @@ fn ifBody(p: *Parser) !bool {
 }
 
 fn finishBody(p: *Parser, start: usize) !u32 {
-    const index = @intCast(u32, p.ctx.code.extra.items.len);
+    const index: u32 = @intCast(p.ctx.code.extra.items.len);
     try p.inst_buf.append(p.gpa, try p.addInst(.end, {}));
-    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast([]const u32, p.inst_buf.items[start..]));
+    try p.ctx.code.extra.appendSlice(p.gpa, @ptrCast(p.inst_buf.items[start..]));
     p.inst_buf.items.len = start;
     return index;
 }

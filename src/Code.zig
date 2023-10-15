@@ -87,7 +87,7 @@ pub const Vm = struct {
     }
 
     pub fn run(vm: *Vm, program: Program) !lib.Value {
-        const body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[program.body..]);
+        const body: []Inst.Ref = @ptrCast(vm.ctx.code.extra.items[program.body..]);
         return vm.evalBody(body);
     }
 
@@ -97,7 +97,7 @@ pub const Vm = struct {
         while (true) {
             const inst = body[i];
             i += 1;
-            switch (ops[@enumToInt(inst)]) {
+            switch (ops[@intFromEnum(inst)]) {
                 .set_var => {
                     const set = vm.ctx.code.getExtra(.set_var, inst);
                     const val = try vm.evalExpr(set.operand);
@@ -120,8 +120,8 @@ pub const Vm = struct {
                             continue;
                         },
                     };
-                    const then_body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[@"if".then_body..]);
-                    const else_body = @ptrCast([]Inst.Ref, vm.ctx.code.extra.items[@"if".else_body..]);
+                    const then_body: []Inst.Ref = @ptrCast(vm.ctx.code.extra.items[@"if".then_body..]);
+                    const else_body: []Inst.Ref = @ptrCast(vm.ctx.code.extra.items[@"if".else_body..]);
                     const body_res = if (cond_bool)
                         try vm.evalBody(then_body)
                     else if (@"if".else_body != 0)
@@ -139,7 +139,7 @@ pub const Vm = struct {
 
     fn evalExpr(vm: *Vm, inst: Inst.Ref) !lib.Value {
         const ops = vm.ctx.code.insts.items(.op);
-        switch (ops[@enumToInt(inst)]) {
+        switch (ops[@intFromEnum(inst)]) {
             .bool => return .{ .bool = vm.ctx.code.getExtra(.bool, inst) },
             .int => return .{ .int = vm.ctx.code.getExtra(.int, inst) },
             .float => return .{ .float = vm.ctx.code.getExtra(.float, inst) },
@@ -162,11 +162,11 @@ pub fn deinit(c: *Code, gpa: Allocator) void {
 }
 
 pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
-    const data = c.insts.items(.data)[@enumToInt(ref)];
+    const data = c.insts.items(.data)[@intFromEnum(ref)];
     switch (op) {
         .end => {},
         .set_var => {
-            const extra_index = @enumToInt(data.lhs);
+            const extra_index = @intFromEnum(data.lhs);
             const offset = c.extra.items[extra_index];
             const len = c.extra.items[extra_index + 1];
             return .{
@@ -175,11 +175,11 @@ pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
             };
         },
         .set_arg => return .{
-            .pos = @intCast(u5, @enumToInt(data.lhs)),
+            .pos = @intCast(@intFromEnum(data.lhs)),
             .operand = data.rhs,
         },
         .@"if" => {
-            const extra_index = @enumToInt(data.rhs);
+            const extra_index = @intFromEnum(data.rhs);
             return .{
                 .then_body = c.extra.items[extra_index],
                 .else_body = c.extra.items[extra_index + 1],
@@ -187,27 +187,27 @@ pub fn getExtra(c: *Code, comptime op: Inst.Op, ref: Inst.Ref) op.Data() {
             };
         },
         .@"var", .str => {
-            const offset = @enumToInt(data.lhs);
-            const len = @enumToInt(data.rhs);
+            const offset = @intFromEnum(data.lhs);
+            const len = @intFromEnum(data.rhs);
             return c.strings.items[offset..][0..len];
         },
-        .arg => return @intCast(u5, @enumToInt(data.lhs)),
-        .bool => return @enumToInt(data.lhs) != 0,
-        .int => return @bitCast(i64, data),
-        .float => return @bitCast(f64, data),
+        .arg => return @intCast(@intFromEnum(data.lhs)),
+        .bool => return @intFromEnum(data.lhs) != 0,
+        .int => return @bitCast(data),
+        .float => return @bitCast(data),
         .not => return data.lhs,
         else => return data,
     }
 }
 
 pub fn addInst(c: *Code, gpa: Allocator, comptime op: Inst.Op, input: op.Data()) !Inst.Ref {
-    const ref = @intToEnum(Inst.Ref, c.insts.len);
+    const ref: Inst.Ref = @enumFromInt(c.insts.len);
     try c.insts.append(gpa, .{
         .op = op,
         .data = switch (op) {
             .end => undefined,
             .set_arg => .{
-                .lhs = @intToEnum(Inst.Ref, input.pos),
+                .lhs = @enumFromInt(input.pos),
                 .rhs = input.operand,
             },
             .set_var => blk: {
@@ -215,10 +215,10 @@ pub fn addInst(c: *Code, gpa: Allocator, comptime op: Inst.Op, input: op.Data())
                 try c.strings.appendSlice(gpa, input.@"var");
 
                 const extra_index = c.extra.items.len;
-                try c.extra.append(gpa, @intCast(u32, offset));
-                try c.extra.append(gpa, @intCast(u32, input.@"var".len));
+                try c.extra.append(gpa, @intCast(offset));
+                try c.extra.append(gpa, @intCast(input.@"var".len));
                 break :blk .{
-                    .lhs = @intToEnum(Inst.Ref, extra_index),
+                    .lhs = @enumFromInt(extra_index),
                     .rhs = input.operand,
                 };
             },
@@ -228,21 +228,21 @@ pub fn addInst(c: *Code, gpa: Allocator, comptime op: Inst.Op, input: op.Data())
                 try c.extra.append(gpa, input.else_body);
                 break :blk .{
                     .lhs = input.cond,
-                    .rhs = @intToEnum(Inst.Ref, extra_index),
+                    .rhs = @enumFromInt(extra_index),
                 };
             },
             .@"var", .str => blk: {
                 const offset = c.strings.items.len;
                 try c.strings.appendSlice(gpa, input);
                 break :blk .{
-                    .lhs = @intToEnum(Inst.Ref, offset),
-                    .rhs = @intToEnum(Inst.Ref, input.len),
+                    .lhs = @enumFromInt(offset),
+                    .rhs = @enumFromInt(input.len),
                 };
             },
-            .arg => .{ .lhs = @intToEnum(Inst.Ref, input), .rhs = undefined },
-            .bool => .{ .lhs = @intToEnum(Inst.Ref, @boolToInt(input)), .rhs = undefined },
-            .int => @bitCast(Inst.Data, input),
-            .float => @bitCast(Inst.Data, input),
+            .arg => .{ .lhs = @enumFromInt(input), .rhs = undefined },
+            .bool => .{ .lhs = @enumFromInt(@intFromBool(input)), .rhs = undefined },
+            .int => @bitCast(input),
+            .float => @bitCast(input),
             .not => .{ .lhs = input, .rhs = undefined },
             else => input,
         },

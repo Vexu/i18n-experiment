@@ -8,12 +8,10 @@ pub fn build(b: *Build) !void {
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
-    _ = target;
 
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardOptimizeOption(.{});
-    _ = mode;
+    const optimize = b.standardOptimizeOption(.{});
 
     const test_step = b.step("test", "Run all tests");
     const test_exe = b.addTest(.{ .root_source_file = .{ .path = "src/lib.zig" } });
@@ -22,6 +20,8 @@ pub fn build(b: *Build) !void {
 
     const example = b.addExecutable(.{
         .name = "example application",
+        .target = target,
+        .optimize = optimize,
         .root_source_file = .{ .path = "examples/generate_defs.zig" },
     });
     i18n.addTo(example, "src/lib.zig");
