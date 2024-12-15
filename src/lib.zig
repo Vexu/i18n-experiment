@@ -30,16 +30,16 @@ pub const GenerateDefsStep = struct {
 
         const new_options = owner.addOptions();
         new_options.addOption(bool, "log_fmts", true);
-        const i18n_module = options.compile_step.modules.get("i18n").?;
-        i18n_module.dependencies.values()[0] = new_options.createModule();
+        const i18n_module = options.compile_step.root_module.import_table.get("i18n").?;
+        i18n_module.import_table.values()[0] = new_options.createModule();
         self.step.dependOn(&new_options.step);
         return self;
     }
 
-    fn make(step: *Step, prog_node: *std.Progress.Node) !void {
-        const self = @fieldParentPtr(GenerateDefsStep, "step", step);
+    fn make(step: *Step, options: std.Build.Step.MakeOptions) !void {
+        const self: *GenerateDefsStep = @fieldParentPtr("step", step);
         // Make the compilation step as usual.
-        self.compile_step.step.make(prog_node) catch {};
+        self.compile_step.step.make(options) catch {};
         const log_txt = self.compile_step.step.result_error_bundle.getCompileLogOutput();
 
         var list = std.ArrayList([]const u8).init(step.owner.allocator);
@@ -73,19 +73,18 @@ pub const GenerateDefsStep = struct {
     }
 };
 
-// TODO this should probably take a *Module but I don't know how
-pub fn addTo(cs: *Step.Compile, path: []const u8) void {
-    const b = cs.step.owner;
+pub fn addTo(mod: *std.Build.Module, path: std.Build.LazyPath) void {
+    const b = mod.owner;
     const options = b.addOptions();
     options.addOption(bool, "log_fmts", false);
     const module = b.createModule(.{
-        .source_file = .{ .path = path },
-        .dependencies = &.{.{
+        .root_source_file = path,
+        .imports = &.{.{
             .name = "options",
             .module = options.createModule(),
         }},
     });
-    return cs.addModule("i18n", module);
+    return mod.addImport("i18n", module);
 }
 
 test {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Build = std.Build;
-const i18n = @import("src/lib.zig");
+
+pub const i18n = @import("src/lib.zig");
 
 pub fn build(b: *Build) !void {
     // Standard target options allows the person running `zig build` to choose
@@ -14,7 +15,7 @@ pub fn build(b: *Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const test_step = b.step("test", "Run all tests");
-    const test_exe = b.addTest(.{ .root_source_file = .{ .path = "src/lib.zig" } });
+    const test_exe = b.addTest(.{ .root_source_file = b.path("src/lib.zig") });
     const run_test = b.addRunArtifact(test_exe);
     test_step.dependOn(&run_test.step);
 
@@ -22,9 +23,9 @@ pub fn build(b: *Build) !void {
         .name = "example application",
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "examples/generate_defs.zig" },
+        .root_source_file = b.path("examples/generate_defs.zig"),
     });
-    i18n.addTo(example, "src/lib.zig");
+    i18n.addTo(&example.root_module, b.path("src/lib.zig"));
 
     const generate_defs_step = b.step("generate_defs", "Generate definitions for the example ");
     const generate_defs = i18n.GenerateDefsStep.create(b, .{ .compile_step = example });

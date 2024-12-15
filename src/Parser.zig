@@ -9,7 +9,7 @@ const Inst = lib.Code.Inst;
 
 const Parser = @This();
 
-const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
+const max_format_args = @typeInfo(std.fmt.ArgSetType).int.bits;
 const ArgPos = enum(u8) {
     @"var" = 0xFF,
     _,

@@ -16,7 +16,7 @@ pub const Argument = struct {
     case: std.fmt.Case,
     base: u8,
 };
-const max_format_args = @typeInfo(std.fmt.ArgSetType).Int.bits;
+const max_format_args = @typeInfo(std.fmt.ArgSetType).int.bits;
 
 defs: std.StringHashMapUnmanaged(lib.Code.Program) = .{},
 code: lib.Code = .{},
@@ -40,11 +40,11 @@ pub fn format(
 ) !void {
     const ArgsType = @TypeOf(args);
     const args_type_info = @typeInfo(ArgsType);
-    if (args_type_info != .Struct) {
+    if (args_type_info != .@"struct") {
         @compileError("expected tuple or struct argument, found " ++ @typeName(ArgsType));
     }
 
-    const fields_info = args_type_info.Struct.fields;
+    const fields_info = args_type_info.@"struct".fields;
     if (fields_info.len > max_format_args) {
         @compileError("32 arguments max are supported per format call");
     }
@@ -110,7 +110,7 @@ pub fn format(
         comptime assert(fmt[i] == '}');
         i += 1;
 
-        comptime var placeholder = std.fmt.Placeholder.parse(fmt[fmt_begin..fmt_end].*);
+        const placeholder = comptime std.fmt.Placeholder.parse(fmt[fmt_begin..fmt_end].*);
         const arg_pos = comptime switch (placeholder.arg) {
             .none => null,
             .number => |pos| pos,
@@ -268,11 +268,24 @@ pub fn render(rule: []const u8, vm: *lib.Code.Vm, writer: anytype) !void {
                 try std.fmt.formatInt(int, options.base, options.case, options.fmt_options, writer);
             },
             .float => |float| {
-                switch (options.kind) {
-                    .decimal => try std.fmt.formatFloatDecimal(float, options.fmt_options, writer),
-                    .hex => try std.fmt.formatFloatHexadecimal(float, options.fmt_options, writer),
-                    .scientific => try std.fmt.formatFloatScientific(float, options.fmt_options, writer),
-                }
+                var buf: [std.fmt.format_float.bufferSize(.decimal, f64)]u8 = undefined;
+
+                const s = switch (options.kind) {
+                    .decimal => std.fmt.formatFloat(&buf, float, .{ .mode = .decimal, .precision = options.fmt_options.precision }) catch |err| switch (err) {
+                        error.BufferTooSmall => "(float)",
+                    },
+                    .scientific => std.fmt.formatFloat(&buf, float, .{ .mode = .scientific, .precision = options.fmt_options.precision }) catch |err| switch (err) {
+                        error.BufferTooSmall => "(float)",
+                    },
+                    .hex => hex: {
+                        var buf_stream = std.io.fixedBufferStream(&buf);
+                        std.fmt.formatFloatHexadecimal(float, options.fmt_options, buf_stream.writer()) catch |err| switch (err) {
+                            error.NoSpaceLeft => unreachable,
+                        };
+                        break :hex buf_stream.getWritten();
+                    },
+                };
+                return std.fmt.formatBuf(s, options.fmt_options, writer);
             },
             .none => unreachable,
         }
